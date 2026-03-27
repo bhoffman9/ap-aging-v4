@@ -423,6 +423,71 @@ export default function APAgingDashboard() {
             )}
           </div>
 
+          {/* ── Vendor Breakdown ── */}
+          {vendorList.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <h3 style={{ fontSize: 13, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+                Vendor Breakdown
+              </h3>
+              <div style={S.tableWrap}>
+                <table style={S.table}>
+                  <thead>
+                    <tr>
+                      <th style={S.th}>Vendor</th>
+                      <th style={{ ...S.th, textAlign: "center" }}>Invoices</th>
+                      {BUCKETS.map((b) => (
+                        <th key={b.key} style={{ ...S.th, textAlign: "right", color: b.color }}>{b.label}</th>
+                      ))}
+                      <th style={{ ...S.th, textAlign: "right" }}>Total Outstanding</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {vendorList.map((v) => {
+                      const vOpen = (vendors[v] || []).filter((i) => i.status !== "paid" && i.status !== "void");
+                      const vTotal = vOpen.reduce((s, i) => s + (i.amount - i.amountPaid), 0);
+                      if (vOpen.length === 0) return null;
+                      return (
+                        <tr key={v} style={S.tr}>
+                          <td style={{ ...S.td, fontWeight: 600, color: "#e2e8f0" }}>{v}</td>
+                          <td style={{ ...S.td, textAlign: "center" }}>{vOpen.length}</td>
+                          {BUCKETS.map((b) => {
+                            const bTotal = vOpen
+                              .filter((i) => agingBucket(i.dueDate) === b.key)
+                              .reduce((s, i) => s + (i.amount - i.amountPaid), 0);
+                            return (
+                              <td key={b.key} style={{ ...S.td, textAlign: "right", fontVariantNumeric: "tabular-nums", color: bTotal > 0 ? b.color : "#334155" }}>
+                                {bTotal > 0 ? fmt(bTotal) : "—"}
+                              </td>
+                            );
+                          })}
+                          <td style={{ ...S.td, textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums", color: "#f1f5f9" }}>
+                            {fmt(vTotal)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {/* Totals row */}
+                    <tr style={{ borderTop: "2px solid #1e293b" }}>
+                      <td style={{ ...S.td, fontWeight: 700, color: "#e2e8f0" }}>Total</td>
+                      <td style={{ ...S.td, textAlign: "center", fontWeight: 700 }}>{openInvoices.length}</td>
+                      {BUCKETS.map((b) => {
+                        const bTotal = bucketTotal(invoices, b.key);
+                        return (
+                          <td key={b.key} style={{ ...S.td, textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums", color: bTotal > 0 ? b.color : "#334155" }}>
+                            {bTotal > 0 ? fmt(bTotal) : "—"}
+                          </td>
+                        );
+                      })}
+                      <td style={{ ...S.td, textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums", color: "#f1f5f9", fontSize: 14 }}>
+                        {fmt(totalOutstanding)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* ── Paid / Void invoices ── */}
           {invoices.filter((i) => i.status === "paid" || i.status === "void").length > 0 && (
             <details style={{ margin: "0 0 16px" }}>
