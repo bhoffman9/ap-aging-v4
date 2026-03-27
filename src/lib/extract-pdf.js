@@ -203,25 +203,64 @@ export function extractFields(text, fileName = "") {
   }
 
   // ── Terms ──
+  // Match "Net 30", "30 Days", "Net 30 Days", "Due on Receipt", etc.
   const terms = firstLabelValue(text, [
     ["terms?", "(net\\s*\\d+)"],
     ["payment\\s*terms?", "(net\\s*\\d+)"],
+    ["terms?", "(\\d+\\s*days?)"],
     ["terms?", "(due\\s*(?:on|upon)\\s*receipt)"],
   ]) || (() => {
-    const m = text.match(/(net\s*\d+)/i);
+    const m = text.match(/(net\s*\d+)/i) || text.match(/(\d+)\s*days?\s+\d{1,2}[\/\-]/i);
     return m ? m[1] : "";
   })();
 
   // ── Vendor Name ──
-  let vendorName = firstLabelValue(text, [
-    ["(?:from|vendor|company|supplier)", "([A-Za-z][\\w\\s&.,'-]{2,50})"],
-    ["(?:sold\\s*by|remit\\s*to|bill\\s*from)", "([A-Za-z][\\w\\s&.,'-]{2,50})"],
+  // Priority 1: "Remit To" — this is who you PAY, i.e. the vendor.
+  //   PDF.js may put the name BEFORE or AFTER the "Remit To:" label,
+  //   so we check both directions.
+  let vendorName = "";
+
+  // Check for "Remit To:" followed by company name
+  vendorName = firstLabelValue(text, [
+    ["remit\\s*to", "([A-Za-z][\\w\\s&.,'-]{2,60})"],
   ]);
 
+  // Check for company name BEFORE "Remit To:" (PDF.js text order quirk)
   if (!vendorName) {
-    // Use first meaningful text chunk — split on spaces and look for company-like names
+    const remitIdx = text.search(/remit\s*to\s*:?/i);
+    if (remitIdx > 0) {
+      // Look backwards from "Remit To" for a company name
+      const before = text.slice(Math.max(0, remitIdx - 200), remitIdx);
+      const lines = before.split(/\s{2,}|\n/).map(l => l.trim()).filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        // Company suffixes are strong signals
+        if (/\b(inc|llc|corp|ltd|co|company|group|enterprises?|services?|logistics|transportation|commodities)\b/i.test(line)) {
+          vendorName = line;
+          break;
+        }
+      }
+    }
+  }
+
+  // Priority 2: Look for any text with company suffix (Inc, LLC, Corp, etc.)
+  if (!vendorName) {
+    const companyMatch = text.match(/([A-Za-z][\w\s&.,'-]{2,50}?\b(?:Inc|LLC|Corp|Ltd|Co|Company|Group|Enterprises?|Services?|Logistics|Transportation))\b\.?/i);
+    if (companyMatch) vendorName = companyMatch[1];
+  }
+
+  // Priority 3: Labeled fields (from/vendor/supplier — but NOT "Bill To" which is the customer)
+  if (!vendorName) {
+    vendorName = firstLabelValue(text, [
+      ["(?:from|vendor|supplier)", "([A-Za-z][\\w\\s&.,'-]{2,50})"],
+      ["(?:sold\\s*by|bill\\s*from)", "([A-Za-z][\\w\\s&.,'-]{2,50})"],
+    ]);
+  }
+
+  // Priority 4: First meaningful text chunk (last resort)
+  if (!vendorName) {
     const chunks = text.split(/\s{2,}|\n/).map((c) => c.trim()).filter(Boolean);
-    const skipRe = /^(invoice|bill|date|page|total|amount|from|to|ship|remit|phone|fax|email|www|http|tax|sub|po|#|number|terms|qty|quantity|description|item|unit|price|due|paid|balance|statement|account|sold|order|net|check|payment|credit|debit|ref)/i;
+    const skipRe = /^(invoice|bill|date|page|total|amount|from|to|ship|remit|phone|fax|email|www|http|tax|sub|po|#|number|terms|qty|quantity|description|item|unit|price|due|paid|balance|statement|account|sold|order|net|check|payment|credit|debit|ref|fixed|variable|rental|contract|customer|branch|meter|make|model|year|vin|fleet|qtr|previously|environmental)/i;
     const skipVal = /^[\d\s\-\/.,;:$%#]+$|^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/;
     for (const chunk of chunks) {
       const clean = chunk.replace(/\s+/g, " ").trim();
@@ -243,7 +282,8 @@ export function extractFields(text, fileName = "") {
   vendorName = vendorName
     .replace(/\|.*$/, "")                              // cut at pipe
     .replace(/\d{2,}\s+\w+\s+(st|street|rd|road|ave|avenue|blvd|boulevard|dr|drive|ln|lane|ct|court|way|pl|place|pkwy|parkway|hwy|highway|ste|suite|fl|floor)\b.*/i, "") // address
-    .replace(/\b(p\.?o\.?\s*box)\b.*/i, "")            // PO Box
+    .replace(/\bPO\s*Box\b.*/i, "")                    // PO Box
+    .replace(/\b(p\.?o\.?\s*box)\b.*/i, "")            // P.O. Box
     .replace(/\d{5}(-\d{4})?.*$/, "")                  // zip code onward
     .replace(/[,.:;\s]+$/, "")
     .trim();
@@ -256,7 +296,7 @@ export function extractFields(text, fileName = "") {
 
   // If no due date but we have terms + invoice date, calculate it
   if (!dueDate && invoiceDate && terms) {
-    const netDays = terms.match(/net\s*(\d+)/i);
+    const netDays = terms.match(/(?:net\s*)?(\d+)/i);
     if (netDays) {
       const d = new Date(invoiceDate + "T00:00:00");
       d.setDate(d.getDate() + parseInt(netDays[1]));
