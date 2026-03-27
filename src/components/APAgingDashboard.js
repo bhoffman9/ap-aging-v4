@@ -67,6 +67,10 @@ export default function APAgingDashboard() {
   const [paymentDate, setPaymentDate] = useState(todayStr());
   const [paymentHistory, setPaymentHistory] = useState([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
+  // Bank balances
+  const [balances, setBalances] = useState([]);
+  const [editingBalance, setEditingBalance] = useState(null);
+  const [balanceInput, setBalanceInput] = useState("");
 
   const fileRef = useRef();
 
@@ -80,7 +84,28 @@ export default function APAgingDashboard() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const loadBalances = useCallback(async () => {
+    try {
+      const res = await fetch("/api/balances");
+      const data = await res.json();
+      if (Array.isArray(data)) setBalances(data);
+    } catch (e) { console.error("Balance load error:", e); }
+  }, []);
+
+  useEffect(() => { load(); loadBalances(); }, [load, loadBalances]);
+
+  const saveBalance = async (id) => {
+    const amt = parseFloat(balanceInput);
+    if (isNaN(amt)) return;
+    await fetch("/api/balances", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, amount: amt }),
+    });
+    setEditingBalance(null);
+    setBalanceInput("");
+    loadBalances();
+  };
 
   /* ── Extract single PDF: regex first, Haiku fallback ── */
   const extractOne = async (file) => {
@@ -375,6 +400,59 @@ export default function APAgingDashboard() {
             setFormData({ vendorName: "", invoiceNumber: "", invoiceDate: "", dueDate: "", amount: "", terms: "", description: "" });
             setPdfFile(null); setEditInvoice(null); setShowModal(true);
           }}>+ Add Invoice</button>
+        </div>
+      </div>
+
+      {/* ── Bank Balances vs AP ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+        {balances.map((b) => (
+          <div key={b.id} style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
+            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+              {b.label} — Bank
+            </div>
+            {editingBalance === b.id ? (
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <span style={{ color: "#64748b", fontSize: 18 }}>$</span>
+                <input
+                  style={{ ...S.input, fontSize: 20, fontWeight: 700, width: "100%", padding: "4px 8px" }}
+                  type="number" step="0.01" value={balanceInput} autoFocus
+                  onChange={(e) => setBalanceInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveBalance(b.id); if (e.key === "Escape") setEditingBalance(null); }}
+                />
+                <button style={{ ...S.btnSmall, color: "#22c55e" }} onClick={() => saveBalance(b.id)}>Save</button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#22c55e", fontVariantNumeric: "tabular-nums", cursor: "pointer" }}
+                  onClick={() => { setEditingBalance(b.id); setBalanceInput(String(b.amount || 0)); }}
+                  title="Click to update">
+                  {fmt(parseFloat(b.amount) || 0)}
+                </div>
+                <button style={{ ...S.btnSmall, fontSize: 10 }}
+                  onClick={() => { setEditingBalance(b.id); setBalanceInput(String(b.amount || 0)); }}>
+                  Edit
+                </button>
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: "#475569", marginTop: 4 }}>
+              {b.updated_at ? `Updated ${fmtDate(b.updated_at.slice(0, 10))}` : ""}
+            </div>
+          </div>
+        ))}
+        {/* Total AP Outstanding for comparison */}
+        <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
+          <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+            Total AP Outstanding
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "#ef4444", fontVariantNumeric: "tabular-nums" }}>
+            {fmt(totalOutstanding)}
+          </div>
+          <div style={{ fontSize: 10, color: "#475569", marginTop: 4 }}>
+            Combined: {fmt(balances.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0) - totalOutstanding)}
+            {balances.reduce((s, b) => s + (parseFloat(b.amount) || 0), 0) >= totalOutstanding
+              ? <span style={{ color: "#22c55e" }}> surplus</span>
+              : <span style={{ color: "#ef4444" }}> shortfall</span>}
+          </div>
         </div>
       </div>
 

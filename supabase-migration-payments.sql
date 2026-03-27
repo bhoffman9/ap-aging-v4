@@ -1,9 +1,4 @@
--- ═══════════════════════════════════════════════════
--- AP Aging Dashboard v4 — Payments Migration
--- Run this in the Supabase SQL Editor (after initial setup)
--- ═══════════════════════════════════════════════════
-
--- Payments history table
+-- Payments history table (run ONLY this, nothing else)
 CREATE TABLE IF NOT EXISTS payments (
   id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   invoice_id  UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
