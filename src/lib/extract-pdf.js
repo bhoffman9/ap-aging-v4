@@ -239,7 +239,30 @@ export function extractFields(text, fileName = "") {
     }
   }
 
-  vendorName = vendorName.replace(/[\s,.:;]+$/, "").trim();
+  // Clean vendor name — strip address tails, pipe chars, trailing junk
+  vendorName = vendorName
+    .replace(/\|.*$/, "")                              // cut at pipe
+    .replace(/\d{2,}\s+\w+\s+(st|street|rd|road|ave|avenue|blvd|boulevard|dr|drive|ln|lane|ct|court|way|pl|place|pkwy|parkway|hwy|highway|ste|suite|fl|floor)\b.*/i, "") // address
+    .replace(/\b(p\.?o\.?\s*box)\b.*/i, "")            // PO Box
+    .replace(/\d{5}(-\d{4})?.*$/, "")                  // zip code onward
+    .replace(/[,.:;\s]+$/, "")
+    .trim();
+
+  // ── Due Date Validation ──
+  // Due date must be on or after invoice date; if not, discard it
+  if (invoiceDate && dueDate && dueDate < invoiceDate) {
+    dueDate = "";
+  }
+
+  // If no due date but we have terms + invoice date, calculate it
+  if (!dueDate && invoiceDate && terms) {
+    const netDays = terms.match(/net\s*(\d+)/i);
+    if (netDays) {
+      const d = new Date(invoiceDate + "T00:00:00");
+      d.setDate(d.getDate() + parseInt(netDays[1]));
+      dueDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    }
+  }
 
   // ── Confidence ──
   const required = [invoiceNumber, invoiceDate, amount, vendorName];
