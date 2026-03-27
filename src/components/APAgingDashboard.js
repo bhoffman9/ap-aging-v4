@@ -378,6 +378,16 @@ export default function APAgingDashboard() {
         </div>
       </div>
 
+      {/* ── Total AP Outstanding ── */}
+      <div style={{ display: "inline-block", padding: "14px 24px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117", marginBottom: 16 }}>
+        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+          Total AP Outstanding
+        </div>
+        <div style={{ fontSize: 26, fontWeight: 700, color: totalOutstanding > 0 ? "#ef4444" : "#22c55e", fontVariantNumeric: "tabular-nums" }}>
+          {fmt(totalOutstanding)}
+        </div>
+      </div>
+
       {/* ── Drop Zone ── */}
       <div
         style={{ ...S.dropZone, ...(dragOver ? S.dropZoneActive : {}), ...(extracting ? { opacity: 0.6 } : {}) }}
