@@ -7,6 +7,11 @@ const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const sbAnon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
 const sb = sbUrl ? createClient(sbUrl, sbAnon) : null;
 
+/* ── Vendor name normalization ── */
+function normalizeVendor(name) {
+  return (name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 /* ── Aging helpers ── */
 const BUCKETS = [
   { key: "current", label: "Current", color: "#22c55e", bg: "#052e16" },
@@ -324,7 +329,8 @@ export default function APAgingDashboard() {
   };
 
   const downloadVendorPdfs = async (vendorName) => {
-    const vendorInvs = invoices.filter((i) => i.vendorName === vendorName && i.pdfPath);
+    const nKey = normalizeVendor(vendorName);
+    const vendorInvs = invoices.filter((i) => normalizeVendor(i.vendorName) === nKey && i.pdfPath);
     if (!vendorInvs.length) { alert("No PDFs for this vendor"); return; }
     for (const inv of vendorInvs) await downloadPdf(inv);
   };
@@ -347,9 +353,16 @@ export default function APAgingDashboard() {
     return 0;
   });
 
+  const vendorGroups = {};
+  const vendorDisplayNames = {};
+  invoices.forEach((i) => {
+    const key = normalizeVendor(i.vendorName);
+    if (!vendorGroups[key]) { vendorGroups[key] = []; vendorDisplayNames[key] = i.vendorName; }
+    vendorGroups[key].push(i);
+  });
   const vendors = {};
-  invoices.forEach((i) => { if (!vendors[i.vendorName]) vendors[i.vendorName] = []; vendors[i.vendorName].push(i); });
-  const vendorList = Object.keys(vendors).sort();
+  Object.keys(vendorGroups).forEach((key) => { vendors[vendorDisplayNames[key]] = vendorGroups[key]; });
+  const vendorList = Object.keys(vendors).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
   const totalOutstanding = openInvoices.reduce((s, i) => s + (i.amount - i.amountPaid), 0);
 
   const S = styles;
@@ -443,7 +456,7 @@ export default function APAgingDashboard() {
             : (
               <table style={S.table}>
                 <thead><tr>
-                  {[{ key: "vendorName", label: "Vendor" }, { key: "invoiceNumber", label: "Invoice #" }, { key: "invoiceDate", label: "Inv Date" }, { key: "dueDate", label: "Due Date" }, { key: "amount", label: "Outstanding" }, { key: "terms", label: "Terms" }, { key: "aging", label: "Aging" }].map((col) => (
+                  {[{ key: "vendorName", label: "Vendor" }, { key: "invoiceNumber", label: "Invoice #" }, { key: "invoiceDate", label: "Inv Date" }, { key: "dueDate", label: "Due Date" }, { key: "amount", label: "Outstanding" }, { key: "description", label: "Description" }, { key: "aging", label: "Aging" }].map((col) => (
                     <th key={col.key} style={{ ...S.th, cursor: "pointer" }} onClick={() => toggleSort(col.key)}>
                       {col.label} {sortField === col.key ? (sortDir === "asc" ? "↑" : "↓") : ""}
                     </th>
@@ -465,7 +478,7 @@ export default function APAgingDashboard() {
                           {fmt(outstanding)}
                           {inv.amountPaid > 0 && <span style={{ fontSize: 10, color: "#22c55e", marginLeft: 4 }}>({fmt(inv.amountPaid)} paid)</span>}
                         </td>
-                        <td style={S.td}>{inv.terms || "—"}</td>
+                        <td style={{ ...S.td, fontSize: 11, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={inv.description || ""}>{inv.description || "—"}</td>
                         <td style={S.td}>
                           <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, color: bInfo?.color, background: bInfo?.bg, border: `1px solid ${bInfo?.color}33` }}>{bInfo?.label}</span>
                         </td>

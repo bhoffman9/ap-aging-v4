@@ -33,16 +33,22 @@ export async function POST(req) {
               type: "text",
               text: `Extract invoice data from this PDF. Return ONLY a JSON object with these fields:
 {
-  "vendorName": "the company that sent this invoice / remit to / who you pay",
-  "invoiceNumber": "the invoice number or reference number",
-  "invoiceDate": "YYYY-MM-DD format",
-  "dueDate": "YYYY-MM-DD format (if shown)",
-  "amount": "total amount as a number (no $ or commas)",
-  "terms": "payment terms like Net 30, 30 Days, etc.",
-  "description": "brief one-line description of what was invoiced"
+  "vendorName": "company name",
+  "invoiceNumber": "invoice number",
+  "invoiceDate": "YYYY-MM-DD",
+  "dueDate": "YYYY-MM-DD or null",
+  "amount": 0.00,
+  "terms": "payment terms",
+  "description": "brief description of what was invoiced"
 }
 
-IMPORTANT: "vendorName" is the company that ISSUED the invoice (the seller/vendor/remit-to), NOT the customer/bill-to.
+RULES — follow these exactly:
+1. vendorName: The COMPANY NAME that issued the invoice (look for a logo, letterhead, or business name at the top). NEVER use a lockbox number, PO box, address, or "remit to" line as the vendor name.
+2. amount: Use the FINAL TOTAL the customer owes — look for "Total Due", "Amount Due", "Balance Due", or "Total Due This Invoice". This must INCLUDE tax/shipping if shown. Do NOT use subtotals, "Total Before Tax", or line item amounts.
+3. description: Summarize what was invoiced (e.g. "Truck rental - Unit #104463, mileage charge"). Never leave blank.
+4. invoiceDate/dueDate: Use YYYY-MM-DD format.
+5. terms: e.g. "Net 10", "Net 30", "Due on Receipt".
+
 Return ONLY valid JSON, no markdown, no explanation.`,
             },
           ],
