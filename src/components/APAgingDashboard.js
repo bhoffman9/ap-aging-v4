@@ -61,6 +61,9 @@ export default function APAgingDashboard() {
   const [sortField, setSortField] = useState("dueDate");
   const [sortDir, setSortDir] = useState("asc");
   const [filterBucket, setFilterBucket] = useState(null);
+  const [filterVendor, setFilterVendor] = useState("");
+  const [filterInvDate, setFilterInvDate] = useState("");
+  const [filterDueDate, setFilterDueDate] = useState("");
   // Batch upload queue
   const [uploadQueue, setUploadQueue] = useState([]);  // [{file, fields, status}]
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -342,10 +345,13 @@ export default function APAgingDashboard() {
   };
 
   const openInvoices = invoices.filter((i) => i.status !== "paid" && i.status !== "void");
-  const filtered = (filterBucket
-    ? openInvoices.filter((i) => agingBucket(i.dueDate) === filterBucket)
-    : openInvoices
-  ).sort((a, b) => {
+  const filtered = openInvoices.filter((i) => {
+    if (filterBucket && agingBucket(i.dueDate) !== filterBucket) return false;
+    if (filterVendor && normalizeVendor(i.vendorName) !== normalizeVendor(filterVendor)) return false;
+    if (filterInvDate && i.invoiceDate !== filterInvDate) return false;
+    if (filterDueDate && i.dueDate !== filterDueDate) return false;
+    return true;
+  }).sort((a, b) => {
     let va = a[sortField], vb = b[sortField];
     if (sortField === "amount") { va = a.amount - a.amountPaid; vb = b.amount - b.amountPaid; }
     if (va < vb) return sortDir === "asc" ? -1 : 1;
@@ -448,6 +454,34 @@ export default function APAgingDashboard() {
               {" "}· <span style={{ color: "#3b82f6", cursor: "pointer", textDecoration: "underline" }} onClick={() => setFilterBucket(null)}>clear filter</span>
             </div>
           )}
+
+          {/* Filter Bar */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "0 0 10px", flexWrap: "wrap" }}>
+            <select value={filterVendor} onChange={(e) => setFilterVendor(e.target.value)}
+              style={{ padding: "6px 8px", fontSize: 12, background: "#0d1117", color: "#e2e8f0", border: "1px solid #1e293b", borderRadius: 6, minWidth: 180 }}>
+              <option value="">All Vendors</option>
+              {vendorList.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+            <label style={{ fontSize: 11, color: "#64748b" }}>Inv Date:
+              <input type="date" value={filterInvDate} onChange={(e) => setFilterInvDate(e.target.value)}
+                style={{ marginLeft: 4, padding: "5px 6px", fontSize: 12, background: "#0d1117", color: "#e2e8f0", border: "1px solid #1e293b", borderRadius: 6 }} />
+            </label>
+            <label style={{ fontSize: 11, color: "#64748b" }}>Due Date:
+              <input type="date" value={filterDueDate} onChange={(e) => setFilterDueDate(e.target.value)}
+                style={{ marginLeft: 4, padding: "5px 6px", fontSize: 12, background: "#0d1117", color: "#e2e8f0", border: "1px solid #1e293b", borderRadius: 6 }} />
+            </label>
+            {(filterVendor || filterInvDate || filterDueDate) && (
+              <span style={{ fontSize: 11, color: "#3b82f6", cursor: "pointer", textDecoration: "underline" }}
+                onClick={() => { setFilterVendor(""); setFilterInvDate(""); setFilterDueDate(""); }}>
+                clear filters
+              </span>
+            )}
+            {(filterVendor || filterInvDate || filterDueDate || filterBucket) && (
+              <span style={{ fontSize: 12, color: "#94a3b8", marginLeft: "auto" }}>
+                {filtered.length} invoice{filtered.length !== 1 ? "s" : ""} · {fmt(filtered.reduce((s, i) => s + (i.amount - i.amountPaid), 0))} outstanding
+              </span>
+            )}
+          </div>
 
           {/* Invoice Table */}
           <div style={S.tableWrap}>
