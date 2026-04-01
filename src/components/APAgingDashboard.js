@@ -477,8 +477,8 @@ export default function APAgingDashboard() {
               </span>
             )}
             {(filterVendor || filterInvDate || filterDueDate || filterBucket) && (
-              <span style={{ fontSize: 12, color: "#94a3b8", marginLeft: "auto" }}>
-                {filtered.length} invoice{filtered.length !== 1 ? "s" : ""} · {fmt(filtered.reduce((s, i) => s + (i.amount - i.amountPaid), 0))} outstanding
+              <span style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginLeft: "auto" }}>
+                {filtered.length} invoice{filtered.length !== 1 ? "s" : ""} · <span style={{ color: "#f59e0b" }}>{fmt(filtered.reduce((s, i) => s + (i.amount - i.amountPaid), 0))}</span> outstanding
               </span>
             )}
           </div>
