@@ -390,6 +390,7 @@ export default function APAgingDashboard() {
         <div style={{ display: "flex", gap: 8 }}>
           <button style={{ ...S.btn, ...(view === "aging" ? S.btnActive : {}) }} onClick={() => setView("aging")}>Aging View</button>
           <button style={{ ...S.btn, ...(view === "vendors" ? S.btnActive : {}) }} onClick={() => { setView("vendors"); setSelectedVendor(null); }}>Vendor Folders</button>
+          <button style={{ ...S.btn, ...(view === "equipment" ? S.btnActive : {}) }} onClick={() => setView("equipment")}>Equipment</button>
           <button style={S.btnPrimary} onClick={() => {
             setFormData({ vendorName: "", invoiceNumber: "", invoiceDate: "", dueDate: "", amount: "", terms: "", description: "" });
             setPdfFile(null); setEditInvoice(null); setShowModal(true);
@@ -679,6 +680,126 @@ export default function APAgingDashboard() {
           </div>
         </div>
       )}
+
+      {/* ── Equipment View ── */}
+      {view === "equipment" && (() => {
+        const EQUIP_VENDORS = [
+          { match: /penske/i, label: "Penske", type: "Truck" },
+          { match: /tec/i, label: "TEC Equipment", type: "Truck" },
+          { match: /tci/i, label: "TCI Leasing", type: "Truck" },
+          { match: /ryder/i, label: "Ryder", type: "Truck" },
+          { match: /mckinney/i, label: "McKinney Trailers", type: "Trailer" },
+          { match: /xtra/i, label: "XTRA Lease", type: "Trailer" },
+          { match: /mountain.*west|utility.*trailer/i, label: "Mountain West / Utility", type: "Trailer" },
+          { match: /bermuda/i, label: "Bermuda Rent", type: "Trailer" },
+          { match: /las vegas.*warehouse/i, label: "Las Vegas Warehouse", type: "Storage" },
+        ];
+
+        const equipInvoices = invoices.filter((inv) =>
+          EQUIP_VENDORS.some((v) => v.match.test(inv.vendorName))
+        );
+
+        // Extract unit numbers from descriptions
+        const unitMap = {};
+        equipInvoices.forEach((inv) => {
+          const vendor = EQUIP_VENDORS.find((v) => v.match.test(inv.vendorName));
+          if (!vendor) return;
+          const desc = inv.description || "";
+          const unitMatch = desc.match(/unit\s*#?\s*(\w+)/i) || desc.match(/(\d{5,6})/);
+          const unitNum = unitMatch ? unitMatch[1] : null;
+          const key = unitNum ? `${vendor.label}|${unitNum}` : `${vendor.label}|INV-${inv.invoiceNumber}`;
+
+          if (!unitMap[key]) {
+            unitMap[key] = {
+              unitNumber: unitNum || "—",
+              vendor: vendor.label,
+              type: vendor.type,
+              invoices: [],
+              totalBilled: 0,
+              totalPaid: 0,
+              lastInvoiceDate: "",
+            };
+          }
+          unitMap[key].invoices.push(inv);
+          unitMap[key].totalBilled += inv.amount || 0;
+          unitMap[key].totalPaid += inv.amountPaid || 0;
+          if (inv.invoiceDate > unitMap[key].lastInvoiceDate) unitMap[key].lastInvoiceDate = inv.invoiceDate;
+        });
+
+        const units = Object.values(unitMap).sort((a, b) =>
+          a.vendor.localeCompare(b.vendor) || a.unitNumber.localeCompare(b.unitNumber)
+        );
+
+        const totalBilled = units.reduce((s, u) => s + u.totalBilled, 0);
+        const totalOutst = units.reduce((s, u) => s + (u.totalBilled - u.totalPaid), 0);
+        const trucks = units.filter((u) => u.type === "Truck");
+        const trailers = units.filter((u) => u.type === "Trailer");
+        const other = units.filter((u) => u.type !== "Truck" && u.type !== "Trailer");
+
+        const renderGroup = (title, items, color) => (
+          <div key={title} style={{ marginBottom: 20 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+              {title} — {items.length} units · {fmt(items.reduce((s, u) => s + u.totalBilled, 0))} billed
+            </h3>
+            <div style={S.tableWrap}>
+              <table style={S.table}>
+                <thead><tr>
+                  <th style={S.th}>Unit #</th>
+                  <th style={S.th}>Vendor</th>
+                  <th style={S.th}>Invoices</th>
+                  <th style={S.th}>Last Invoice</th>
+                  <th style={S.th}>Total Billed</th>
+                  <th style={S.th}>Paid</th>
+                  <th style={S.th}>Outstanding</th>
+                </tr></thead>
+                <tbody>
+                  {items.map((u, i) => {
+                    const outst = u.totalBilled - u.totalPaid;
+                    return (
+                      <tr key={i} style={S.tr}>
+                        <td style={{ ...S.td, fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono', monospace" }}>{u.unitNumber}</td>
+                        <td style={S.td}>{u.vendor}</td>
+                        <td style={{ ...S.td, textAlign: "center" }}>{u.invoices.length}</td>
+                        <td style={S.td}>{fmtDate(u.lastInvoiceDate)}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(u.totalBilled)}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: "#22c55e" }}>{fmt(u.totalPaid)}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 700, color: outst > 0 ? "#f59e0b" : "#22c55e" }}>{fmt(outst)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+
+        return (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 20 }}>
+              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Total Units</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#e2e8f0", marginTop: 4 }}>{units.length}</div>
+              </div>
+              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Trucks</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#3b82f6", marginTop: 4 }}>{trucks.length}</div>
+              </div>
+              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Trailers</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#f59e0b", marginTop: 4 }}>{trailers.length}</div>
+              </div>
+              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Total Billed</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#ef4444", marginTop: 4 }}>{fmt(totalBilled)}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{fmt(totalOutst)} outstanding</div>
+              </div>
+            </div>
+            {trucks.length > 0 && renderGroup("Trucks", trucks, "#3b82f6")}
+            {trailers.length > 0 && renderGroup("Trailers", trailers, "#f59e0b")}
+            {other.length > 0 && renderGroup("Other Equipment", other, "#8b5cf6")}
+          </>
+        );
+      })()}
 
       {/* ══════════════════════════════════════════════
           MODAL — Add / Edit Invoice
