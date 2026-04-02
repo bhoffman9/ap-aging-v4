@@ -19,9 +19,12 @@ const VENDOR_ALIASES = {
   "xtra lease": "XTRA Lease",
   "mountain west utility trailer": "Mountain West",
   "mountain west utility trailer, inc": "Mountain West",
+  "utility trailer": "Mountain West",
   "ten trailer leasing": "Ten Trailer Leasing",
+  "ten trailer": "Ten Trailer Leasing",
   "premier trailer leasing": "Premier Trailer",
   "premier trailer": "Premier Trailer",
+  "premier trailers": "Premier Trailer",
   "ryder truck rentals": "Ryder",
   "bermuda rent": "Bermuda Rent",
 };
