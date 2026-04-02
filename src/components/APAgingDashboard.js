@@ -72,7 +72,7 @@ export default function APAgingDashboard() {
   const [batchIndex, setBatchIndex] = useState(0);
   // Payment modal
   const [paymentInvoice, setPaymentInvoice] = useState(null);
-  const [paymentMode, setPaymentMode] = useState("full"); // "full" | "partial"
+  const [paymentMode, setPaymentMode] = useState("full"); // "full" | "partial" | "credit"
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentDate, setPaymentDate] = useState(todayStr());
   const [paymentHistory, setPaymentHistory] = useState([]);
@@ -313,6 +313,7 @@ export default function APAgingDashboard() {
         invoiceId: paymentInvoice.id,
         amount: amt,
         paymentDate: paymentDate,
+        note: paymentMode === "credit" ? "CREDIT APPLIED" : "",
       }),
     });
 
@@ -919,8 +920,8 @@ export default function APAgingDashboard() {
               <input style={S.input} type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
             </label>
 
-            {/* Full / Partial toggle */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+            {/* Full / Partial / Credit toggle */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
               <button
                 style={{ ...S.btn, textAlign: "center", ...(paymentMode === "full" ? { borderColor: "#3b82f6", color: "#3b82f6", background: "#0c1a3d" } : {}) }}
                 onClick={() => { setPaymentMode("full"); setPaymentAmount(String(paymentInvoice.amount - paymentInvoice.amountPaid)); }}
@@ -929,6 +930,10 @@ export default function APAgingDashboard() {
                 style={{ ...S.btn, textAlign: "center", ...(paymentMode === "partial" ? { borderColor: "#3b82f6", color: "#3b82f6", background: "#0c1a3d" } : {}) }}
                 onClick={() => { setPaymentMode("partial"); setPaymentAmount(""); }}
               >Partial Payment</button>
+              <button
+                style={{ ...S.btn, textAlign: "center", ...(paymentMode === "credit" ? { borderColor: "#f59e0b", color: "#f59e0b", background: "#1e1b0e" } : {}) }}
+                onClick={() => { setPaymentMode("credit"); setPaymentAmount(""); }}
+              >Apply Credit</button>
             </div>
 
             {/* Amount display / input */}
@@ -937,6 +942,14 @@ export default function APAgingDashboard() {
                 <span style={{ fontSize: 14, color: "#22c55e" }}>Paying: </span>
                 <span style={{ fontSize: 18, fontWeight: 700, color: "#22c55e" }}>{fmt(paymentInvoice.amount - paymentInvoice.amountPaid)}</span>
               </div>
+            ) : paymentMode === "credit" ? (
+              <label style={{ ...S.formLabel, marginBottom: 16 }}>
+                <span style={{ fontSize: 11, color: "#f59e0b", fontWeight: 600, textTransform: "uppercase" }}>Credit Amount (reduces balance)</span>
+                <input style={{ ...S.input, fontSize: 18, fontWeight: 700, textAlign: "center", borderColor: "#f59e0b44" }} type="number" step="0.01"
+                  value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)}
+                  placeholder="Enter credit amount" autoFocus />
+                <span style={{ fontSize: 10, color: "#64748b", marginTop: 4, display: "block" }}>Enter the credit amount as a positive number — it will be applied to reduce the balance</span>
+              </label>
             ) : (
               <label style={{ ...S.formLabel, marginBottom: 16 }}>
                 <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Payment Amount</span>
@@ -951,12 +964,15 @@ export default function APAgingDashboard() {
               <div style={{ background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, padding: 12, marginBottom: 16 }}>
                 <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Payment History</div>
                 {loadingPayments ? <div style={{ fontSize: 12, color: "#475569" }}>Loading...</div> :
-                  paymentHistory.map((p) => (
-                    <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #111827", fontSize: 13 }}>
-                      <span style={{ color: "#94a3b8" }}>{fmtDate(p.paymentDate)}</span>
-                      <span style={{ color: "#22c55e", fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>{fmt(p.amount)}</span>
-                    </div>
-                  ))
+                  paymentHistory.map((p) => {
+                    const isCredit = (p.note || "").includes("CREDIT");
+                    return (
+                      <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #111827", fontSize: 13 }}>
+                        <span style={{ color: "#94a3b8" }}>{fmtDate(p.paymentDate)} {isCredit && <span style={{ fontSize: 10, color: "#f59e0b", marginLeft: 4 }}>CREDIT</span>}</span>
+                        <span style={{ color: isCredit ? "#f59e0b" : "#22c55e", fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>{fmt(p.amount)}</span>
+                      </div>
+                    );
+                  })
                 }
               </div>
             )}
@@ -964,7 +980,9 @@ export default function APAgingDashboard() {
             {/* Actions */}
             <div style={{ display: "flex", gap: 8 }}>
               <button style={{ ...S.btn, flex: 1 }} onClick={() => setPaymentInvoice(null)}>Cancel</button>
-              <button style={{ ...S.btnPrimary, flex: 1, padding: "12px 16px", fontSize: 14 }} onClick={submitPayment}>Record Payment</button>
+              <button style={{ ...S.btnPrimary, flex: 1, padding: "12px 16px", fontSize: 14, ...(paymentMode === "credit" ? { background: "#b45309" } : {}) }} onClick={submitPayment}>
+                {paymentMode === "credit" ? "Apply Credit" : "Record Payment"}
+              </button>
             </div>
           </div>
         </div>
