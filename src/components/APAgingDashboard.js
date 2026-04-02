@@ -326,6 +326,18 @@ export default function APAgingDashboard() {
     }
   };
 
+  /* ── Reopen paid/void invoice ── */
+  const reopenInvoice = async (inv) => {
+    if (!confirm(`Reopen invoice ${inv.invoiceNumber} from ${inv.vendorName}? This will set it back to ${inv.amountPaid > 0 ? "partial" : "open"}.`)) return;
+    const newStatus = inv.amountPaid > 0 ? "partial" : "open";
+    await fetch(`/api/invoices?id=${inv.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    load();
+  };
+
   /* ── Delete invoice ── */
   const deleteInvoice = async (inv) => {
     if (!confirm(`Delete invoice ${inv.invoiceNumber} from ${inv.vendorName}?`)) return;
@@ -675,7 +687,8 @@ export default function APAgingDashboard() {
                       <td style={S.td}>{inv.status !== "paid" && inv.status !== "void" && <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, color: bInfo?.color, background: bInfo?.bg, border: `1px solid ${bInfo?.color}33` }}>{bInfo?.label}</span>}</td>
                       <td style={S.td}>
                         <div style={{ display: "flex", gap: 4 }}>
-                          {inv.status !== "paid" && <button style={S.btnSmall} onClick={() => openPaymentModal(inv)}>💰</button>}
+                          {inv.status !== "paid" && inv.status !== "void" && <button style={S.btnSmall} onClick={() => openPaymentModal(inv)} title="Record payment">💰</button>}
+                          {(inv.status === "paid" || inv.status === "void") && <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(inv)} title="Reopen invoice">↩️</button>}
                           <button style={S.btnSmall} onClick={() => {
                             setEditInvoice(inv);
                             setFormData({ vendorName: inv.vendorName, invoiceNumber: inv.invoiceNumber, invoiceDate: inv.invoiceDate || "", dueDate: inv.dueDate || "", amount: inv.amount, terms: inv.terms || "", description: inv.description || "" });
