@@ -66,6 +66,7 @@ export default function APAgingDashboard() {
   const [filterDueDate, setFilterDueDate] = useState("");
   const [equipment, setEquipment] = useState([]);
   const [expandedUnit, setExpandedUnit] = useState(null);
+  const [selectedInvoices, setSelectedInvoices] = useState(new Set());
   // Batch upload queue
   const [uploadQueue, setUploadQueue] = useState([]);  // [{file, fields, status}]
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -326,6 +327,38 @@ export default function APAgingDashboard() {
     }
   };
 
+  /* ── Toggle invoice selection ── */
+  const toggleSelect = (id) => {
+    setSelectedInvoices((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    if (selectedInvoices.size === filtered.length) setSelectedInvoices(new Set());
+    else setSelectedInvoices(new Set(filtered.map((i) => i.id)));
+  };
+
+  /* ── Batch pay selected invoices ── */
+  const batchPaySelected = async () => {
+    const selected = invoices.filter((i) => selectedInvoices.has(i.id));
+    const total = selected.reduce((s, i) => s + (i.amount - i.amountPaid), 0);
+    if (!confirm(`Pay ${selected.length} invoices totaling ${fmt(total)}?`)) return;
+    const date = todayStr();
+    for (const inv of selected) {
+      const amt = inv.amount - inv.amountPaid;
+      if (amt <= 0) continue;
+      await fetch("/api/payments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceId: inv.id, amount: amt, paymentDate: date }),
+      });
+    }
+    setSelectedInvoices(new Set());
+    load();
+  };
+
   /* ── Reopen paid/void invoice ── */
   const reopenInvoice = async (inv) => {
     if (!confirm(`Reopen invoice ${inv.invoiceNumber} from ${inv.vendorName}? This will set it back to ${inv.amountPaid > 0 ? "partial" : "open"}.`)) return;
@@ -514,8 +547,21 @@ export default function APAgingDashboard() {
             {loading ? <div style={{ padding: 40, textAlign: "center", color: "#475569" }}>Loading…</div>
             : filtered.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#475569" }}>{filterBucket ? "No invoices in this bucket" : "No open invoices — drop a PDF above"}</div>
             : (
+              {/* Batch pay bar */}
+              {selectedInvoices.size > 0 && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", background: "#0c1a3d", borderBottom: "2px solid #3b82f6", borderRadius: "8px 8px 0 0" }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#e2e8f0" }}>
+                    {selectedInvoices.size} selected · {fmt(invoices.filter(i => selectedInvoices.has(i.id)).reduce((s, i) => s + (i.amount - i.amountPaid), 0))} total
+                  </span>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ ...S.btn, color: "#64748b" }} onClick={() => setSelectedInvoices(new Set())}>Clear</button>
+                    <button style={{ ...S.btnPrimary, padding: "8px 20px" }} onClick={batchPaySelected}>Pay All Selected</button>
+                  </div>
+                </div>
+              )}
               <table style={S.table}>
                 <thead><tr>
+                  <th style={{ ...S.th, width: 36 }}><input type="checkbox" checked={selectedInvoices.size === filtered.length && filtered.length > 0} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /></th>
                   {[{ key: "vendorName", label: "Vendor" }, { key: "invoiceNumber", label: "Invoice #" }, { key: "invoiceDate", label: "Inv Date" }, { key: "dueDate", label: "Due Date" }, { key: "amount", label: "Outstanding" }, { key: "description", label: "Description" }, { key: "aging", label: "Aging" }].map((col) => (
                     <th key={col.key} style={{ ...S.th, cursor: "pointer" }} onClick={() => toggleSort(col.key)}>
                       {col.label} {sortField === col.key ? (sortDir === "asc" ? "↑" : "↓") : ""}
@@ -529,7 +575,8 @@ export default function APAgingDashboard() {
                     const bInfo = BUCKETS.find((b) => b.key === bucket);
                     const outstanding = inv.amount - inv.amountPaid;
                     return (
-                      <tr key={inv.id} style={S.tr}>
+                      <tr key={inv.id} style={{ ...S.tr, background: selectedInvoices.has(inv.id) ? "#0c1a3d" : "" }}>
+                        <td style={S.td}><input type="checkbox" checked={selectedInvoices.has(inv.id)} onChange={() => toggleSelect(inv.id)} style={{ cursor: "pointer" }} /></td>
                         <td style={S.td}>{inv.vendorName}</td>
                         <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{inv.invoiceNumber}</td>
                         <td style={S.td}>{fmtDate(inv.invoiceDate)}</td>
