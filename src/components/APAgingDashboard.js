@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 /* ── Supabase browser client ── */
@@ -65,6 +65,7 @@ export default function APAgingDashboard() {
   const [filterInvDate, setFilterInvDate] = useState("");
   const [filterDueDate, setFilterDueDate] = useState("");
   const [equipment, setEquipment] = useState([]);
+  const [expandedUnit, setExpandedUnit] = useState(null);
   // Batch upload queue
   const [uploadQueue, setUploadQueue] = useState([]);  // [{file, fields, status}]
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -700,47 +701,66 @@ export default function APAgingDashboard() {
         const totalMonthly = active.reduce((s, u) => s + u.monthlyCost, 0);
         const totalBilled = equipment.reduce((s, u) => s + u.totalBilled, 0);
         const totalOutst = equipment.reduce((s, u) => s + u.outstanding, 0);
+        const vendorColor = (v) => ({ TCI: "#f97316", Penske: "#ef4444", TEC: "#3b82f6", McKinney: "#f59e0b", "XTRA Lease": "#06b6d4", "Mountain West": "#22c55e", "Ten Trailer Leasing": "#8b5cf6", "Premier Trailer": "#ec4899", Ryder: "#a855f7" }[v] || "#64748b");
 
         const renderGroup = (title, items, color) => (
-          <div key={title} style={{ marginBottom: 20 }}>
-            <h3 style={{ fontSize: 14, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
-              {title} — {items.length} units · {items.filter(u => u.status === "Active").length} active · {fmt(items.filter(u => u.status === "Active").reduce((s, u) => s + u.monthlyCost, 0))}/mo
-            </h3>
+          <div key={title} style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: 1 }}>
+                {title} — {items.filter(u => u.status === "Active").length} active / {items.length} total
+              </h3>
+              <span style={{ fontSize: 14, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>
+                {fmt(items.filter(u => u.status === "Active").reduce((s, u) => s + u.monthlyCost, 0))}/mo
+              </span>
+            </div>
             <div style={S.tableWrap}>
               <table style={S.table}>
                 <thead><tr>
-                  <th style={S.th}>Fleet #</th>
+                  <th style={{ ...S.th, width: 60 }}>Fleet</th>
                   <th style={S.th}>Vendor</th>
-                  <th style={S.th}>Unit #</th>
+                  <th style={{ ...S.th, width: 80 }}>Unit #</th>
                   <th style={S.th}>Type</th>
-                  <th style={S.th}>VIN</th>
-                  <th style={S.th}>Make/Model</th>
-                  <th style={S.th}>Monthly</th>
-                  <th style={S.th}>Mi Rate</th>
-                  <th style={S.th}>Contract</th>
-                  <th style={S.th}>Invoices</th>
-                  <th style={S.th}>Billed</th>
-                  <th style={S.th}>Outstanding</th>
-                  <th style={S.th}>Status</th>
+                  <th style={{ ...S.th, width: 90 }}>Monthly</th>
+                  <th style={{ ...S.th, width: 70 }}>Mi Rate</th>
+                  <th style={{ ...S.th, width: 50 }}>Inv</th>
+                  <th style={{ ...S.th, width: 100 }}>Billed</th>
+                  <th style={{ ...S.th, width: 100 }}>Outstanding</th>
+                  <th style={{ ...S.th, width: 70 }}>Status</th>
                 </tr></thead>
                 <tbody>
-                  {items.map((u, i) => (
-                    <tr key={i} style={{ ...S.tr, opacity: u.status === "Active" ? 1 : 0.5 }}>
-                      <td style={{ ...S.td, fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono', monospace" }}>{u.fleetNumber || "—"}</td>
-                      <td style={S.td}>{u.vendor}</td>
-                      <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>{u.vendorUnit || "—"}</td>
-                      <td style={{ ...S.td, fontSize: 11 }}>{u.type}</td>
-                      <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>{u.vin || "—"}</td>
-                      <td style={{ ...S.td, fontSize: 11 }}>{u.make !== "—" ? `${u.make} ${u.model}` : "—"}</td>
-                      <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: "#f59e0b" }}>{u.monthlyCost > 0 ? fmt(u.monthlyCost) : "—"}</td>
-                      <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontSize: 11 }}>{u.mileageRate > 0 ? `$${u.mileageRate.toFixed(3)}` : "—"}</td>
-                      <td style={{ ...S.td, fontSize: 11 }}>{u.contract || "—"}</td>
-                      <td style={{ ...S.td, textAlign: "center" }}>{u.invoiceCount || "—"}</td>
-                      <td style={{ ...S.td, fontVariantNumeric: "tabular-nums" }}>{u.totalBilled > 0 ? fmt(u.totalBilled) : "—"}</td>
-                      <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 700, color: u.outstanding > 0 ? "#ef4444" : "#22c55e" }}>{u.outstanding > 0 ? fmt(u.outstanding) : "—"}</td>
-                      <td style={S.td}><span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: u.status === "Active" ? "#052e16" : "#1e1b0e", color: u.status === "Active" ? "#22c55e" : "#a3a3a3" }}>{u.status}</span></td>
-                    </tr>
-                  ))}
+                  {items.map((u) => {
+                    const isExpanded = expandedUnit === u.id;
+                    const hasInvoices = u.invoices && u.invoices.length > 0;
+                    return (
+                      <React.Fragment key={u.id}>
+                        <tr style={{ ...S.tr, cursor: hasInvoices ? "pointer" : "default", opacity: u.status === "Active" ? 1 : 0.5 }}
+                          onClick={() => hasInvoices && setExpandedUnit(isExpanded ? null : u.id)}>
+                          <td style={{ ...S.td, fontWeight: 700, color: "#e2e8f0", fontFamily: "'JetBrains Mono', monospace" }}>{u.fleetNumber || "—"}</td>
+                          <td style={S.td}><span style={{ borderLeft: `3px solid ${vendorColor(u.vendor)}`, paddingLeft: 8 }}>{u.vendor}</span></td>
+                          <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>{u.vendorUnit || "—"}</td>
+                          <td style={{ ...S.td, fontSize: 11 }}>{u.type}</td>
+                          <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: "#f59e0b" }}>{u.monthlyCost > 0 ? fmt(u.monthlyCost) : "—"}</td>
+                          <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontSize: 11 }}>{u.mileageRate > 0 ? `$${u.mileageRate.toFixed(3)}` : "—"}</td>
+                          <td style={{ ...S.td, textAlign: "center", color: hasInvoices ? "#3b82f6" : "#475569" }}>{hasInvoices ? `${u.invoiceCount}` : "—"}{hasInvoices && <span style={{ fontSize: 9, marginLeft: 2 }}>{isExpanded ? "▲" : "▼"}</span>}</td>
+                          <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{u.totalBilled > 0 ? fmt(u.totalBilled) : "—"}</td>
+                          <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 700, color: u.outstanding > 0 ? "#ef4444" : u.totalBilled > 0 ? "#22c55e" : "#475569" }}>{u.outstanding > 0 ? fmt(u.outstanding) : u.totalBilled > 0 ? "$0" : "—"}</td>
+                          <td style={S.td}><span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: u.status === "Active" ? "#052e16" : u.status === "Returned" ? "#1e1b0e" : "#1c0a0a", color: u.status === "Active" ? "#22c55e" : u.status === "Returned" ? "#a3a3a3" : "#ef4444" }}>{u.status}</span></td>
+                        </tr>
+                        {isExpanded && u.invoices && u.invoices.map((inv, j) => (
+                          <tr key={`inv-${j}`} style={{ background: "#0a0f1a" }}>
+                            <td style={{ ...S.td, borderLeft: "3px solid #1e293b" }}></td>
+                            <td colSpan={2} style={{ ...S.td, fontSize: 11, color: "#94a3b8", fontFamily: "'JetBrains Mono', monospace" }}>{inv.invoiceNumber}</td>
+                            <td style={{ ...S.td, fontSize: 11, color: "#64748b" }}>{fmtDate(inv.date)}</td>
+                            <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontSize: 12 }}>{fmt(inv.amount)}</td>
+                            <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontSize: 11, color: "#22c55e" }}>{fmt(inv.paid)}</td>
+                            <td></td>
+                            <td colSpan={2} style={{ ...S.td, fontSize: 10, color: "#64748b", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{inv.description || "—"}</td>
+                            <td style={S.td}><span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: inv.status === "paid" ? "#052e16" : "#0c1a3d", color: inv.status === "paid" ? "#22c55e" : "#3b82f6" }}>{inv.status}</span></td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -750,31 +770,19 @@ export default function APAgingDashboard() {
         return (
           <>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 20 }}>
-              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Total Fleet</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#e2e8f0", marginTop: 4 }}>{equipment.length}</div>
-                <div style={{ fontSize: 11, color: "#64748b" }}>{active.length} active</div>
-              </div>
-              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Trucks</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#3b82f6", marginTop: 4 }}>{trucks.length}</div>
-                <div style={{ fontSize: 11, color: "#64748b" }}>{trucks.filter(u => u.status === "Active").length} active</div>
-              </div>
-              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Trailers</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#f59e0b", marginTop: 4 }}>{trailers.length}</div>
-                <div style={{ fontSize: 11, color: "#64748b" }}>{trailers.filter(u => u.status === "Active").length} active</div>
-              </div>
-              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Monthly Cost</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#f59e0b", marginTop: 4 }}>{fmt(totalMonthly)}</div>
-                <div style={{ fontSize: 11, color: "#64748b" }}>{fmt(totalMonthly * 12)}/yr</div>
-              </div>
-              <div style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Total Billed</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "#ef4444", marginTop: 4 }}>{fmt(totalBilled)}</div>
-                <div style={{ fontSize: 11, color: "#64748b" }}>{fmt(totalOutst)} outstanding</div>
-              </div>
+              {[
+                { label: "Total Fleet", value: equipment.length, sub: `${active.length} active`, color: "#e2e8f0" },
+                { label: "Trucks", value: trucks.length, sub: `${trucks.filter(u => u.status === "Active").length} active`, color: "#3b82f6" },
+                { label: "Trailers", value: trailers.length, sub: `${trailers.filter(u => u.status === "Active").length} active`, color: "#f59e0b" },
+                { label: "Monthly Cost", value: fmt(totalMonthly), sub: `${fmt(totalMonthly * 12)}/yr`, color: "#f59e0b", isText: true },
+                { label: "Total Billed", value: fmt(totalBilled), sub: `${fmt(totalOutst)} outstanding`, color: "#ef4444", isText: true },
+              ].map((card, i) => (
+                <div key={i} style={{ padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117" }}>
+                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>{card.label}</div>
+                  <div style={{ fontSize: card.isText ? 18 : 26, fontWeight: 700, color: card.color, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>{card.value}</div>
+                  <div style={{ fontSize: 11, color: "#64748b" }}>{card.sub}</div>
+                </div>
+              ))}
             </div>
             {trucks.length > 0 && renderGroup("Trucks", trucks, "#3b82f6")}
             {trailers.length > 0 && renderGroup("Trailers", trailers, "#f59e0b")}

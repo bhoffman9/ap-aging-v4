@@ -3,9 +3,34 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
+// Map invoice vendor names to equipment vendor names
+const VENDOR_ALIASES = {
+  "penske truck leasing": "Penske",
+  "penske": "Penske",
+  "tec equipment leasing": "TEC",
+  "tec equipment": "TEC",
+  "tci dedicated logistics, leasing & rental": "TCI",
+  "tci dedicated logistics": "TCI",
+  "tci": "TCI",
+  "mckinney trailers": "McKinney",
+  "mckinney trailer rentals": "McKinney",
+  "xtra lease": "XTRA Lease",
+  "mountain west utility trailer": "Mountain West",
+  "mountain west utility trailer, inc": "Mountain West",
+  "ten trailer leasing": "Ten Trailer Leasing",
+  "premier trailer leasing": "Premier Trailer",
+  "premier trailer": "Premier Trailer",
+  "ryder truck rentals": "Ryder",
+  "bermuda rent": "Bermuda Rent",
+};
+
+function normalizeVendor(name) {
+  const lower = (name || "").trim().toLowerCase();
+  return VENDOR_ALIASES[lower] || null;
+}
+
 export async function GET() {
   try {
-    // Get fleet from equipment table
     const { data: fleet, error: fleetErr } = await supabase
       .from("equipment")
       .select("*")
@@ -14,66 +39,97 @@ export async function GET() {
 
     if (fleetErr) return NextResponse.json({ error: fleetErr.message }, { status: 500 });
 
-    // Get invoice cost data per unit
     const { data: invoices, error: invErr } = await supabase
       .from("invoices")
-      .select("vendor_name, invoice_number, invoice_date, amount, amount_paid, description, status");
+      .select("id, vendor_name, invoice_number, invoice_date, due_date, amount, amount_paid, description, status")
+      .order("invoice_date", { ascending: false });
 
     if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
 
-    // Build cost lookup by vendor_unit number AND by vendor name (for vendors without unit-level detail)
-    const costByUnit = {};
-    const costByVendor = {};
+    // Build lookups: by unit number, by vendor
+    const invoicesByUnit = {};
+    const invoicesByVendor = {};
+
     (invoices || []).forEach((inv) => {
       const desc = inv.description || "";
       const unitMatch = desc.match(/unit\s*#?\s*(\w+)/i) || desc.match(/(\d{5,6})/);
-      const amt = parseFloat(inv.amount) || 0;
-      const paid = parseFloat(inv.amount_paid) || 0;
+      const equipVendor = normalizeVendor(inv.vendor_name);
 
       if (unitMatch) {
         const unitNum = unitMatch[1];
-        if (!costByUnit[unitNum]) costByUnit[unitNum] = { invoiceCount: 0, totalBilled: 0, totalPaid: 0, lastInvoiceDate: "" };
-        costByUnit[unitNum].invoiceCount++;
-        costByUnit[unitNum].totalBilled += amt;
-        costByUnit[unitNum].totalPaid += paid;
-        if (inv.invoice_date > costByUnit[unitNum].lastInvoiceDate) costByUnit[unitNum].lastInvoiceDate = inv.invoice_date;
+        if (!invoicesByUnit[unitNum]) invoicesByUnit[unitNum] = [];
+        invoicesByUnit[unitNum].push(inv);
       }
 
-      // Also track by vendor name (normalized)
-      const vn = (inv.vendor_name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (!costByVendor[vn]) costByVendor[vn] = { invoiceCount: 0, totalBilled: 0, totalPaid: 0, lastInvoiceDate: "" };
-      costByVendor[vn].invoiceCount++;
-      costByVendor[vn].totalBilled += amt;
-      costByVendor[vn].totalPaid += paid;
-      if (inv.invoice_date > costByVendor[vn].lastInvoiceDate) costByVendor[vn].lastInvoiceDate = inv.invoice_date;
+      if (equipVendor) {
+        if (!invoicesByVendor[equipVendor]) invoicesByVendor[equipVendor] = [];
+        invoicesByVendor[equipVendor].push(inv);
+      }
     });
 
-    // Merge fleet data with invoice costs
+    // Count how many units each vendor has (for splitting lump-sum invoices)
+    const unitsPerVendor = {};
+    (fleet || []).forEach((eq) => {
+      if (eq.status === "Active") {
+        unitsPerVendor[eq.vendor] = (unitsPerVendor[eq.vendor] || 0) + 1;
+      }
+    });
+
+    // Merge fleet with invoice data
     const units = (fleet || []).map((eq) => {
-      // Try unit-level match first, fall back to vendor-level
-      const costs = costByUnit[eq.vendor_unit]
-        || costByVendor[(eq.vendor || "").toLowerCase().replace(/[^a-z0-9]/g, "")]
-        || {};
+      // Get invoices: unit-level first, then vendor-level for units without matches
+      const unitInvs = invoicesByUnit[eq.vendor_unit] || [];
+      const vendorInvs = invoicesByVendor[eq.vendor] || [];
+
+      // Use unit-level if available, otherwise split vendor-level evenly across units
+      let matchedInvs, totalBilled, totalPaid;
+      if (unitInvs.length > 0) {
+        matchedInvs = unitInvs;
+        totalBilled = unitInvs.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0);
+        totalPaid = unitInvs.reduce((s, i) => s + (parseFloat(i.amount_paid) || 0), 0);
+      } else if (vendorInvs.length > 0 && !invoicesByUnit[eq.vendor_unit]) {
+        // Vendor-level: show all vendor invoices but split totals by unit count
+        const unitCount = unitsPerVendor[eq.vendor] || 1;
+        matchedInvs = vendorInvs;
+        totalBilled = vendorInvs.reduce((s, i) => s + (parseFloat(i.amount) || 0), 0) / unitCount;
+        totalPaid = vendorInvs.reduce((s, i) => s + (parseFloat(i.amount_paid) || 0), 0) / unitCount;
+      } else {
+        matchedInvs = [];
+        totalBilled = 0;
+        totalPaid = 0;
+      }
+
+      const lastDate = matchedInvs.length > 0 ? matchedInvs[0].invoice_date : "";
+
       return {
         id: eq.id,
         fleetNumber: eq.fleet_number,
         vendor: eq.vendor,
         vendorUnit: eq.vendor_unit,
-        vin: eq.vin,
-        make: eq.make,
-        model: eq.model,
-        year: eq.year,
+        vin: eq.vin || "—",
+        make: eq.make || "—",
+        model: eq.model || "—",
+        year: eq.year || "—",
         type: eq.type,
         category: eq.category,
         monthlyCost: parseFloat(eq.monthly_cost) || 0,
         mileageRate: parseFloat(eq.mileage_rate) || 0,
-        contract: eq.contract,
+        contract: eq.contract || "",
         status: eq.status,
-        invoiceCount: costs.invoiceCount || 0,
-        totalBilled: costs.totalBilled || 0,
-        totalPaid: costs.totalPaid || 0,
-        outstanding: (costs.totalBilled || 0) - (costs.totalPaid || 0),
-        lastInvoiceDate: costs.lastInvoiceDate || "",
+        invoiceCount: matchedInvs.length,
+        totalBilled: Math.round(totalBilled * 100) / 100,
+        totalPaid: Math.round(totalPaid * 100) / 100,
+        outstanding: Math.round((totalBilled - totalPaid) * 100) / 100,
+        lastInvoiceDate: lastDate,
+        invoices: matchedInvs.map((i) => ({
+          id: i.id,
+          invoiceNumber: i.invoice_number,
+          date: i.invoice_date,
+          amount: parseFloat(i.amount) || 0,
+          paid: parseFloat(i.amount_paid) || 0,
+          description: i.description || "",
+          status: i.status,
+        })),
       };
     });
 
