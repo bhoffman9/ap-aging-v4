@@ -21,23 +21,39 @@ export async function GET() {
 
     if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
 
-    // Build cost lookup by vendor_unit number
-    const costMap = {};
+    // Build cost lookup by vendor_unit number AND by vendor name (for vendors without unit-level detail)
+    const costByUnit = {};
+    const costByVendor = {};
     (invoices || []).forEach((inv) => {
       const desc = inv.description || "";
       const unitMatch = desc.match(/unit\s*#?\s*(\w+)/i) || desc.match(/(\d{5,6})/);
-      if (!unitMatch) return;
-      const unitNum = unitMatch[1];
-      if (!costMap[unitNum]) costMap[unitNum] = { invoiceCount: 0, totalBilled: 0, totalPaid: 0, lastInvoiceDate: "" };
-      costMap[unitNum].invoiceCount++;
-      costMap[unitNum].totalBilled += parseFloat(inv.amount) || 0;
-      costMap[unitNum].totalPaid += parseFloat(inv.amount_paid) || 0;
-      if (inv.invoice_date > costMap[unitNum].lastInvoiceDate) costMap[unitNum].lastInvoiceDate = inv.invoice_date;
+      const amt = parseFloat(inv.amount) || 0;
+      const paid = parseFloat(inv.amount_paid) || 0;
+
+      if (unitMatch) {
+        const unitNum = unitMatch[1];
+        if (!costByUnit[unitNum]) costByUnit[unitNum] = { invoiceCount: 0, totalBilled: 0, totalPaid: 0, lastInvoiceDate: "" };
+        costByUnit[unitNum].invoiceCount++;
+        costByUnit[unitNum].totalBilled += amt;
+        costByUnit[unitNum].totalPaid += paid;
+        if (inv.invoice_date > costByUnit[unitNum].lastInvoiceDate) costByUnit[unitNum].lastInvoiceDate = inv.invoice_date;
+      }
+
+      // Also track by vendor name (normalized)
+      const vn = (inv.vendor_name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (!costByVendor[vn]) costByVendor[vn] = { invoiceCount: 0, totalBilled: 0, totalPaid: 0, lastInvoiceDate: "" };
+      costByVendor[vn].invoiceCount++;
+      costByVendor[vn].totalBilled += amt;
+      costByVendor[vn].totalPaid += paid;
+      if (inv.invoice_date > costByVendor[vn].lastInvoiceDate) costByVendor[vn].lastInvoiceDate = inv.invoice_date;
     });
 
     // Merge fleet data with invoice costs
     const units = (fleet || []).map((eq) => {
-      const costs = costMap[eq.vendor_unit] || {};
+      // Try unit-level match first, fall back to vendor-level
+      const costs = costByUnit[eq.vendor_unit]
+        || costByVendor[(eq.vendor || "").toLowerCase().replace(/[^a-z0-9]/g, "")]
+        || {};
       return {
         id: eq.id,
         fleetNumber: eq.fleet_number,
