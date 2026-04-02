@@ -36,6 +36,7 @@ function normalizeVendor(name) {
 
 export async function GET() {
   try {
+    if (!supabase) return NextResponse.json({ error: "Not configured" }, { status: 503 });
     const { data: fleet, error: fleetErr } = await supabase
       .from("equipment")
       .select("*")
