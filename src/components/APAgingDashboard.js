@@ -547,6 +547,7 @@ export default function APAgingDashboard() {
             {loading ? <div style={{ padding: 40, textAlign: "center", color: "#475569" }}>Loading…</div>
             : filtered.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#475569" }}>{filterBucket ? "No invoices in this bucket" : "No open invoices — drop a PDF above"}</div>
             : (
+              <>
               {/* Batch pay bar */}
               {selectedInvoices.size > 0 && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", background: "#0c1a3d", borderBottom: "2px solid #3b82f6", borderRadius: "8px 8px 0 0" }}>
@@ -606,6 +607,7 @@ export default function APAgingDashboard() {
                   })}
                 </tbody>
               </table>
+              </>
             )}
           </div>
 
