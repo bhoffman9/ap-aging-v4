@@ -12,6 +12,8 @@ const VENDOR_ALIASES = {
   "tci dedicated logistics, leasing & rental": "TCI",
   "tci dedicated logistics": "TCI",
   "tci": "TCI",
+  "transportation commodities inc": "TCI",
+  "transportation commodities": "TCI",
   "mckinney trailers": "McKinney",
   "mckinney trailer rentals": "McKinney",
   "xtra lease": "XTRA Lease",
@@ -41,24 +43,45 @@ export async function GET() {
 
     const { data: invoices, error: invErr } = await supabase
       .from("invoices")
-      .select("id, vendor_name, invoice_number, invoice_date, due_date, amount, amount_paid, description, status")
+      .select("id, vendor_name, invoice_number, invoice_date, due_date, amount, amount_paid, description, status, pdf_path")
       .order("invoice_date", { ascending: false });
 
     if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
 
-    // Build lookups: by unit number, by vendor
+    // Build contract-to-unit lookup from fleet data
+    const contractToUnit = {};
+    (fleet || []).forEach((eq) => {
+      if (eq.contract) {
+        const m = eq.contract.match(/(\d{4})/);
+        if (m) contractToUnit[m[1]] = eq.vendor_unit;
+      }
+    });
+
+    // Build lookups: by unit number, by contract, by vendor
     const invoicesByUnit = {};
     const invoicesByVendor = {};
 
     (invoices || []).forEach((inv) => {
       const desc = inv.description || "";
-      const unitMatch = desc.match(/unit\s*#?\s*(\w+)/i) || desc.match(/(\d{5,6})/);
+      const invNum = inv.invoice_number || "";
       const equipVendor = normalizeVendor(inv.vendor_name);
 
+      // Match by unit number in description
+      const unitMatch = desc.match(/unit\s*#?\s*(\w+)/i) || desc.match(/(\d{5,6})/);
       if (unitMatch) {
         const unitNum = unitMatch[1];
         if (!invoicesByUnit[unitNum]) invoicesByUnit[unitNum] = [];
         invoicesByUnit[unitNum].push(inv);
+      }
+
+      // Match TCI invoices by contract number in invoice number (e.g. 31L1710002 → contract 1710)
+      if (equipVendor === "TCI" && !unitMatch) {
+        const contractMatch = invNum.match(/\d{2}[A-Z](\d{4})\d{2,}/);
+        if (contractMatch && contractToUnit[contractMatch[1]]) {
+          const vendorUnit = contractToUnit[contractMatch[1]];
+          if (!invoicesByUnit[vendorUnit]) invoicesByUnit[vendorUnit] = [];
+          invoicesByUnit[vendorUnit].push(inv);
+        }
       }
 
       if (equipVendor) {
@@ -129,6 +152,7 @@ export async function GET() {
           paid: parseFloat(i.amount_paid) || 0,
           description: i.description || "",
           status: i.status,
+          pdfPath: i.pdf_path || "",
         })),
       };
     });

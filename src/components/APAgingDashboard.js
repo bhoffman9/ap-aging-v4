@@ -747,9 +747,11 @@ export default function APAgingDashboard() {
                           <td style={S.td}><span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: u.status === "Active" ? "#052e16" : u.status === "Returned" ? "#1e1b0e" : "#1c0a0a", color: u.status === "Active" ? "#22c55e" : u.status === "Returned" ? "#a3a3a3" : "#ef4444" }}>{u.status}</span></td>
                         </tr>
                         {isExpanded && u.invoices && u.invoices.map((inv, j) => (
-                          <tr key={`inv-${j}`} style={{ background: "#0a0f1a" }}>
-                            <td style={{ ...S.td, borderLeft: "3px solid #1e293b" }}></td>
-                            <td colSpan={2} style={{ ...S.td, fontSize: 11, color: "#94a3b8", fontFamily: "'JetBrains Mono', monospace" }}>{inv.invoiceNumber}</td>
+                          <tr key={`inv-${j}`} style={{ background: "#0a0f1a", cursor: inv.pdfPath ? "pointer" : "default" }}
+                            onClick={() => inv.pdfPath && downloadPdf({ pdfPath: inv.pdfPath, invoiceNumber: inv.invoiceNumber })}
+                            title={inv.pdfPath ? "Click to open PDF" : ""}>
+                            <td style={{ ...S.td, borderLeft: "3px solid #1e293b" }}>{inv.pdfPath ? "📄" : ""}</td>
+                            <td colSpan={2} style={{ ...S.td, fontSize: 11, color: inv.pdfPath ? "#3b82f6" : "#94a3b8", fontFamily: "'JetBrains Mono', monospace", textDecoration: inv.pdfPath ? "underline" : "none" }}>{inv.invoiceNumber}</td>
                             <td style={{ ...S.td, fontSize: 11, color: "#64748b" }}>{fmtDate(inv.date)}</td>
                             <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontSize: 12 }}>{fmt(inv.amount)}</td>
                             <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontSize: 11, color: "#22c55e" }}>{fmt(inv.paid)}</td>
