@@ -449,6 +449,8 @@ export default function APAgingDashboard() {
           <button style={{ ...S.btn, ...(view === "aging" ? S.btnActive : {}) }} onClick={() => setView("aging")}>Aging View</button>
           <button style={{ ...S.btn, ...(view === "vendors" ? S.btnActive : {}) }} onClick={() => { setView("vendors"); setSelectedVendor(null); }}>Vendor Folders</button>
           <button style={{ ...S.btn, ...(view === "equipment" ? S.btnActive : {}) }} onClick={() => setView("equipment")}>Equipment</button>
+          <button style={{ ...S.btn, ...(view === "expected" ? S.btnActive : {}) }} onClick={() => { setView("expected"); loadEquipment(); }}>Expected</button>
+          <button style={{ ...S.btn, ...(view === "analytics" ? S.btnActive : {}) }} onClick={() => setView("analytics")}>Analytics</button>
           <button style={S.btnPrimary} onClick={() => {
             setFormData({ vendorName: "", invoiceNumber: "", invoiceDate: "", dueDate: "", amount: "", terms: "", description: "" });
             setPdfFile(null); setEditInvoice(null); setShowModal(true);
@@ -456,15 +458,40 @@ export default function APAgingDashboard() {
         </div>
       </div>
 
-      {/* ── Total AP Outstanding ── */}
-      <div style={{ display: "inline-block", padding: "14px 24px", borderRadius: 8, border: "1px solid #1e293b", background: "#0d1117", marginBottom: 16 }}>
-        <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
-          Total AP Outstanding
-        </div>
-        <div style={{ fontSize: 26, fontWeight: 700, color: totalOutstanding > 0 ? "#ef4444" : "#22c55e", fontVariantNumeric: "tabular-nums" }}>
-          {fmt(totalOutstanding)}
-        </div>
-      </div>
+      {/* ── Dashboard Summary Cards ── */}
+      {(() => {
+        const today = new Date();
+        const todayStr2 = today.toISOString().slice(0, 10);
+        const weekFromNow = new Date(today); weekFromNow.setDate(weekFromNow.getDate() + 7);
+        const weekStr = weekFromNow.toISOString().slice(0, 10);
+        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+
+        const dueThisWeek = openInvoices.filter(i => i.dueDate && i.dueDate >= todayStr2 && i.dueDate <= weekStr);
+        const dueThisWeekAmt = dueThisWeek.reduce((s, i) => s + (i.amount - i.amountPaid), 0);
+        const overdue = openInvoices.filter(i => i.dueDate && i.dueDate < todayStr2);
+        const overdueAmt = overdue.reduce((s, i) => s + (i.amount - i.amountPaid), 0);
+        const paidThisMonth = invoices.filter(i => i.status === "paid" && i.updatedAt && i.updatedAt >= monthStart);
+        const paidThisMonthAmt = paidThisMonth.reduce((s, i) => s + i.amount, 0);
+
+        const cards = [
+          { label: "Total Outstanding", value: fmt(totalOutstanding), sub: `${openInvoices.length} open invoices`, color: totalOutstanding > 0 ? "#ef4444" : "#22c55e" },
+          { label: "Due This Week", value: fmt(dueThisWeekAmt), sub: `${dueThisWeek.length} invoices`, color: dueThisWeekAmt > 0 ? "#f59e0b" : "#22c55e" },
+          { label: "Overdue", value: fmt(overdueAmt), sub: `${overdue.length} past due`, color: overdueAmt > 0 ? "#ef4444" : "#22c55e" },
+          { label: "Paid This Month", value: fmt(paidThisMonthAmt), sub: `${paidThisMonth.length} invoices`, color: "#22c55e" },
+        ];
+
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
+            {cards.map((c, i) => (
+              <div key={i} style={{ padding: "16px 20px", borderRadius: 10, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{c.label}</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: c.color, fontVariantNumeric: "tabular-nums" }}>{c.value}</div>
+                <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>{c.sub}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── Drop Zone ── */}
       <div
@@ -755,6 +782,188 @@ export default function APAgingDashboard() {
           </div>
         </div>
       )}
+
+      {/* ── Expected Invoices View ── */}
+      {view === "expected" && (() => {
+        const now = new Date();
+        const currentMonth = now.toLocaleString("en-US", { month: "long", year: "numeric" });
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+        const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
+
+        // Group equipment by vendor, calculate expected monthly
+        const vendorExpected = {};
+        equipment.filter(u => u.status === "Active" && u.monthlyCost > 0).forEach(u => {
+          if (!vendorExpected[u.vendor]) vendorExpected[u.vendor] = { units: 0, expected: 0, received: 0, invoices: [], category: u.category };
+          vendorExpected[u.vendor].units++;
+          vendorExpected[u.vendor].expected += u.monthlyCost;
+        });
+
+        // Match actual invoices this month
+        const VENDOR_MATCH = {
+          "TCI": /transportation commodities|tci/i,
+          "Penske": /penske/i,
+          "TEC": /tec equipment/i,
+          "McKinney": /mckinney/i,
+          "XTRA Lease": /xtra/i,
+          "Mountain West": /mountain west|utility trailer/i,
+          "Ten Trailer Leasing": /ten trailer/i,
+          "Premier Trailer": /premier/i,
+          "Ryder": /ryder/i,
+        };
+
+        invoices.forEach(inv => {
+          if (!inv.invoiceDate || inv.invoiceDate < monthStart) return;
+          for (const [vendor, pattern] of Object.entries(VENDOR_MATCH)) {
+            if (pattern.test(inv.vendorName) && vendorExpected[vendor]) {
+              vendorExpected[vendor].received += inv.amount || 0;
+              vendorExpected[vendor].invoices.push(inv);
+              break;
+            }
+          }
+        });
+
+        const vendors = Object.entries(vendorExpected).sort((a, b) => b[1].expected - a[1].expected);
+        const totalExpected = vendors.reduce((s, [, v]) => s + v.expected, 0);
+        const totalReceived = vendors.reduce((s, [, v]) => s + v.received, 0);
+
+        return (
+          <>
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 12 }}>Expected Monthly Invoices — {currentMonth}</h2>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
+              <div style={{ padding: "16px 20px", borderRadius: 10, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Expected Total</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#f59e0b", fontVariantNumeric: "tabular-nums", marginTop: 4 }}>{fmt(totalExpected)}</div>
+                <div style={{ fontSize: 11, color: "#475569" }}>based on equipment monthly rates</div>
+              </div>
+              <div style={{ padding: "16px 20px", borderRadius: 10, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Received So Far</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "#3b82f6", fontVariantNumeric: "tabular-nums", marginTop: 4 }}>{fmt(totalReceived)}</div>
+                <div style={{ fontSize: 11, color: "#475569" }}>{Math.round(totalReceived / totalExpected * 100) || 0}% of expected</div>
+              </div>
+              <div style={{ padding: "16px 20px", borderRadius: 10, border: "1px solid #1e293b", background: "#0d1117" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Still Awaiting</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: totalExpected - totalReceived > 0 ? "#ef4444" : "#22c55e", fontVariantNumeric: "tabular-nums", marginTop: 4 }}>{fmt(Math.max(0, totalExpected - totalReceived))}</div>
+                <div style={{ fontSize: 11, color: "#475569" }}>{vendors.filter(([, v]) => v.received === 0).length} vendors with no invoice yet</div>
+              </div>
+            </div>
+            <div style={S.tableWrap}>
+              <table style={S.table}>
+                <thead><tr>
+                  <th style={S.th}>Vendor</th>
+                  <th style={S.th}>Type</th>
+                  <th style={S.th}>Units</th>
+                  <th style={S.th}>Expected</th>
+                  <th style={S.th}>Received</th>
+                  <th style={S.th}>Difference</th>
+                  <th style={S.th}>Status</th>
+                </tr></thead>
+                <tbody>
+                  {vendors.map(([vendor, v]) => {
+                    const diff = v.received - v.expected;
+                    const status = v.received === 0 ? "missing" : Math.abs(diff) < 1 ? "match" : diff > 0 ? "over" : "under";
+                    const statusColors = { missing: { bg: "#1c0a0a", color: "#ef4444", label: "No Invoice" }, match: { bg: "#052e16", color: "#22c55e", label: "Matched" }, over: { bg: "#1e1b0e", color: "#f59e0b", label: "Over" }, under: { bg: "#0c1a3d", color: "#3b82f6", label: "Under" } };
+                    const sc = statusColors[status];
+                    return (
+                      <tr key={vendor} style={S.tr}>
+                        <td style={{ ...S.td, fontWeight: 600, color: "#e2e8f0" }}>{vendor}</td>
+                        <td style={{ ...S.td, fontSize: 11 }}>{v.category === "truck" ? "Truck" : "Trailer"}</td>
+                        <td style={{ ...S.td, textAlign: "center" }}>{v.units}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: "#f59e0b" }}>{fmt(v.expected)}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: "#3b82f6" }}>{v.received > 0 ? fmt(v.received) : "—"}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 700, color: status === "match" ? "#22c55e" : diff > 0 ? "#f59e0b" : "#ef4444" }}>{v.received > 0 ? (diff >= 0 ? "+" : "") + fmt(diff) : "—"}</td>
+                        <td style={S.td}><span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, fontWeight: 600, background: sc.bg, color: sc.color }}>{sc.label}</span></td>
+                      </tr>
+                    );
+                  })}
+                  <tr style={{ borderTop: "2px solid #1e293b" }}>
+                    <td style={{ ...S.td, fontWeight: 800, color: "#e2e8f0" }}>TOTAL</td>
+                    <td style={S.td}></td>
+                    <td style={{ ...S.td, textAlign: "center", fontWeight: 700 }}>{vendors.reduce((s, [, v]) => s + v.units, 0)}</td>
+                    <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 800, color: "#f59e0b" }}>{fmt(totalExpected)}</td>
+                    <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 800, color: "#3b82f6" }}>{fmt(totalReceived)}</td>
+                    <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 800, color: totalReceived - totalExpected >= 0 ? "#f59e0b" : "#ef4444" }}>{(totalReceived - totalExpected >= 0 ? "+" : "") + fmt(totalReceived - totalExpected)}</td>
+                    <td style={S.td}></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </>
+        );
+      })()}
+
+      {/* ── Vendor Analytics View ── */}
+      {view === "analytics" && (() => {
+        // Group all invoices by vendor
+        const vendorStats = {};
+        invoices.forEach(inv => {
+          const vn = inv.vendorName;
+          if (!vendorStats[vn]) vendorStats[vn] = { invoices: [], totalBilled: 0, totalPaid: 0, count: 0, dates: [] };
+          vendorStats[vn].invoices.push(inv);
+          vendorStats[vn].totalBilled += inv.amount || 0;
+          vendorStats[vn].totalPaid += inv.amountPaid || 0;
+          vendorStats[vn].count++;
+          if (inv.invoiceDate) vendorStats[vn].dates.push(inv.invoiceDate);
+        });
+
+        const vendorList2 = Object.entries(vendorStats)
+          .map(([name, s]) => ({
+            name,
+            ...s,
+            outstanding: s.totalBilled - s.totalPaid,
+            avgInvoice: s.count > 0 ? s.totalBilled / s.count : 0,
+            firstDate: s.dates.length > 0 ? s.dates.sort()[0] : "",
+            lastDate: s.dates.length > 0 ? s.dates.sort().pop() : "",
+          }))
+          .sort((a, b) => b.totalBilled - a.totalBilled);
+
+        const totalBilled = vendorList2.reduce((s, v) => s + v.totalBilled, 0);
+
+        return (
+          <>
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 12 }}>Vendor Analytics</h2>
+            <div style={S.tableWrap}>
+              <table style={S.table}>
+                <thead><tr>
+                  <th style={S.th}>Vendor</th>
+                  <th style={S.th}>Invoices</th>
+                  <th style={S.th}>Total Billed</th>
+                  <th style={S.th}>% of Spend</th>
+                  <th style={S.th}>Avg Invoice</th>
+                  <th style={S.th}>Total Paid</th>
+                  <th style={S.th}>Outstanding</th>
+                  <th style={S.th}>First Invoice</th>
+                  <th style={S.th}>Last Invoice</th>
+                </tr></thead>
+                <tbody>
+                  {vendorList2.map((v) => {
+                    const pct = totalBilled > 0 ? (v.totalBilled / totalBilled * 100) : 0;
+                    return (
+                      <tr key={v.name} style={S.tr}>
+                        <td style={{ ...S.td, fontWeight: 600, color: "#e2e8f0" }}>{v.name}</td>
+                        <td style={{ ...S.td, textAlign: "center" }}>{v.count}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(v.totalBilled)}</td>
+                        <td style={S.td}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <div style={{ flex: 1, background: "#1e293b", borderRadius: 3, height: 8, overflow: "hidden" }}>
+                              <div style={{ width: `${Math.min(pct, 100)}%`, background: "#3b82f6", height: "100%", borderRadius: 3 }} />
+                            </div>
+                            <span style={{ fontSize: 11, color: "#94a3b8", minWidth: 36 }}>{pct.toFixed(1)}%</span>
+                          </div>
+                        </td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: "#94a3b8" }}>{fmt(v.avgInvoice)}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: "#22c55e" }}>{fmt(v.totalPaid)}</td>
+                        <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", fontWeight: 700, color: v.outstanding > 0 ? "#ef4444" : "#22c55e" }}>{v.outstanding > 0 ? fmt(v.outstanding) : "$0"}</td>
+                        <td style={{ ...S.td, fontSize: 11, color: "#64748b" }}>{fmtDate(v.firstDate)}</td>
+                        <td style={{ ...S.td, fontSize: 11, color: "#64748b" }}>{fmtDate(v.lastDate)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        );
+      })()}
 
       {/* ── Equipment View ── */}
       {view === "equipment" && (() => {
