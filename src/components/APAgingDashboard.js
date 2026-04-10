@@ -78,6 +78,11 @@ export default function APAgingDashboard() {
   const [paymentDate, setPaymentDate] = useState(todayStr());
   const [paymentHistory, setPaymentHistory] = useState([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
+  // Batch payment modal
+  const [showBatchPayModal, setShowBatchPayModal] = useState(false);
+  const [batchPayItems, setBatchPayItems] = useState([]); // [{invoice, mode, amount}]
+  const [batchPayDate, setBatchPayDate] = useState(todayStr());
+  const [batchPaying, setBatchPaying] = useState(false);
 
   const fileRef = useRef();
 
@@ -341,33 +346,85 @@ export default function APAgingDashboard() {
   };
 
   /* ── Batch pay selected invoices ── */
-  const batchPaySelected = async () => {
-    const selected = invoices.filter((i) => selectedInvoices.has(i.id));
-    const total = selected.reduce((s, i) => s + (i.amount - i.amountPaid), 0);
-    if (!confirm(`Pay ${selected.length} invoices totaling ${fmt(total)}?`)) return;
-    const date = todayStr();
-    for (const inv of selected) {
-      const amt = inv.amount - inv.amountPaid;
-      if (amt <= 0) continue;
-      await fetch("/api/payments", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ invoiceId: inv.id, amount: amt, paymentDate: date }),
-      });
-    }
-    setSelectedInvoices(new Set());
-    load();
+  const openBatchPayModal = () => {
+    const selected = invoices.filter((i) => selectedInvoices.has(i.id) && (i.amount - i.amountPaid) > 0);
+    if (selected.length === 0) return;
+    setBatchPayItems(selected.map((inv) => ({
+      invoice: inv,
+      mode: "full",
+      amount: String(inv.amount - inv.amountPaid),
+    })));
+    setBatchPayDate(todayStr());
+    setShowBatchPayModal(true);
   };
 
-  /* ── Reopen paid/void invoice ── */
-  const reopenInvoice = async (inv) => {
-    if (!confirm(`Reopen invoice ${inv.invoiceNumber} from ${inv.vendorName}? This will set it back to ${inv.amountPaid > 0 ? "partial" : "open"}.`)) return;
-    const newStatus = inv.amountPaid > 0 ? "partial" : "open";
-    await fetch(`/api/invoices?id=${inv.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: newStatus }),
+  const updateBatchItem = (index, field, value) => {
+    setBatchPayItems((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      if (field === "mode" && value === "full") {
+        const inv = next[index].invoice;
+        next[index].amount = String(inv.amount - inv.amountPaid);
+      }
+      if (field === "mode" && value === "partial") {
+        next[index].amount = "";
+      }
+      return next;
     });
+  };
+
+  const submitBatchPay = async () => {
+    setBatchPaying(true);
+    try {
+      for (const item of batchPayItems) {
+        const amt = parseFloat(item.amount);
+        if (isNaN(amt) || amt <= 0) continue;
+        await fetch("/api/payments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ invoiceId: item.invoice.id, amount: amt, paymentDate: batchPayDate }),
+        });
+      }
+      setShowBatchPayModal(false);
+      setSelectedInvoices(new Set());
+      load();
+    } finally {
+      setBatchPaying(false);
+    }
+  };
+
+  /* ── Reopen paid/void invoice — undoes the most recent payment ── */
+  const reopenInvoice = async (inv) => {
+    // Fetch payment history to find the most recent one to undo
+    let lastPaymentId = null;
+    let lastPaymentAmount = 0;
+    try {
+      const r = await fetch(`/api/payments?invoiceId=${inv.id}`);
+      const payments = await r.json();
+      if (Array.isArray(payments) && payments.length > 0) {
+        // payments are ordered by payment_date desc, take the first
+        lastPaymentId = payments[0].id;
+        lastPaymentAmount = payments[0].amount;
+      }
+    } catch {}
+
+    const msg = lastPaymentId
+      ? `Undo last payment of ${fmt(lastPaymentAmount)} on invoice ${inv.invoiceNumber} from ${inv.vendorName}?`
+      : `Reopen invoice ${inv.invoiceNumber} from ${inv.vendorName}? This will set it back to ${inv.amountPaid > 0 ? "partial" : "open"}.`;
+    if (!confirm(msg)) return;
+
+    if (lastPaymentId) {
+      // True undo: delete the most recent payment record (auto-recalculates invoice)
+      await fetch(`/api/payments?id=${lastPaymentId}`, { method: "DELETE" });
+    } else {
+      // Fallback: just flip the status
+      const newStatus = inv.amountPaid > 0 ? "partial" : "open";
+      await fetch(`/api/invoices?id=${inv.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+    }
     load();
   };
 
@@ -583,7 +640,7 @@ export default function APAgingDashboard() {
                   </span>
                   <div style={{ display: "flex", gap: 8 }}>
                     <button style={{ ...S.btn, color: "#64748b" }} onClick={() => setSelectedInvoices(new Set())}>Clear</button>
-                    <button style={{ ...S.btnPrimary, padding: "8px 20px" }} onClick={batchPaySelected}>Pay All Selected</button>
+                    <button style={{ ...S.btnPrimary, padding: "8px 20px" }} onClick={openBatchPayModal}>Pay Selected</button>
                   </div>
                 </div>
               )}
@@ -699,6 +756,7 @@ export default function APAgingDashboard() {
                         <td style={S.td}>{fmt(inv.amount)}</td>
                         <td style={S.td}><span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#052e16" : "#1e1b2e", color: inv.status === "paid" ? "#22c55e" : "#8b5cf6" }}>{inv.status}</span></td>
                         <td style={S.td}>
+                          <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(inv)} title="Reopen invoice">↩️</button>
                           {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)}>📥</button>}
                           <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)}>🗑️</button>
                         </td>
@@ -1254,6 +1312,85 @@ export default function APAgingDashboard() {
               <button style={{ ...S.btnPrimary, flex: 1, padding: "12px 16px", fontSize: 14, ...(paymentMode === "credit" ? { background: "#b45309" } : {}) }} onClick={submitPayment}>
                 {paymentMode === "credit" ? "Apply Credit" : "Record Payment"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════
+          MODAL — Batch Payment (per-invoice full/partial)
+          ══════════════════════════════════════════════ */}
+      {showBatchPayModal && (
+        <div style={S.overlay} onClick={() => !batchPaying && setShowBatchPayModal(false)}>
+          <div style={{ ...S.modal, maxWidth: 600, maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: 18, fontWeight: 800, color: "#e2e8f0", marginBottom: 4 }}>Batch Payment</h3>
+            <p style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>{batchPayItems.length} invoices selected</p>
+
+            {/* Payment date */}
+            <label style={{ ...S.formLabel, marginBottom: 16 }}>
+              <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Payment Date</span>
+              <input style={S.input} type="date" value={batchPayDate} onChange={(e) => setBatchPayDate(e.target.value)} />
+            </label>
+
+            {/* Invoice list */}
+            <div style={{ flex: 1, overflowY: "auto", marginBottom: 16 }}>
+              {batchPayItems.map((item, idx) => {
+                const inv = item.invoice;
+                const outstanding = inv.amount - inv.amountPaid;
+                return (
+                  <div key={inv.id} style={{ background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, padding: 14, marginBottom: 8 }}>
+                    {/* Header row */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0" }}>{inv.vendorName}</div>
+                        <div style={{ fontSize: 12, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}>#{inv.invoiceNumber}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 12, color: "#64748b" }}>Balance Due</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: "#f59e0b" }}>{fmt(outstanding)}</div>
+                      </div>
+                    </div>
+                    {/* Full / Partial toggle + amount */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <button
+                        style={{ ...S.btn, flex: "0 0 auto", fontSize: 12, padding: "6px 12px", ...(item.mode === "full" ? { borderColor: "#3b82f6", color: "#3b82f6", background: "#0c1a3d" } : {}) }}
+                        onClick={() => updateBatchItem(idx, "mode", "full")}
+                      >Full</button>
+                      <button
+                        style={{ ...S.btn, flex: "0 0 auto", fontSize: 12, padding: "6px 12px", ...(item.mode === "partial" ? { borderColor: "#3b82f6", color: "#3b82f6", background: "#0c1a3d" } : {}) }}
+                        onClick={() => updateBatchItem(idx, "mode", "partial")}
+                      >Partial</button>
+                      {item.mode === "full" ? (
+                        <div style={{ flex: 1, background: "#052e16", border: "1px solid #22c55e33", borderRadius: 6, padding: "6px 12px", textAlign: "right" }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "#22c55e" }}>{fmt(outstanding)}</span>
+                        </div>
+                      ) : (
+                        <input
+                          style={{ ...S.input, flex: 1, fontSize: 14, fontWeight: 600, textAlign: "right", margin: 0 }}
+                          type="number" step="0.01" placeholder="0.00" autoFocus={idx === 0}
+                          value={item.amount} onChange={(e) => updateBatchItem(idx, "amount", e.target.value)}
+                        />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Total + actions */}
+            <div style={{ borderTop: "1px solid #1e293b", paddingTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: "#94a3b8" }}>Total Payment</span>
+                <span style={{ fontSize: 18, fontWeight: 800, color: "#22c55e" }}>
+                  {fmt(batchPayItems.reduce((s, item) => s + (parseFloat(item.amount) || 0), 0))}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...S.btn, flex: 1 }} onClick={() => setShowBatchPayModal(false)} disabled={batchPaying}>Cancel</button>
+                <button style={{ ...S.btnPrimary, flex: 1, padding: "12px 16px", fontSize: 14 }} onClick={submitBatchPay} disabled={batchPaying}>
+                  {batchPaying ? "Processing..." : "Record Payments"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

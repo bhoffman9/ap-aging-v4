@@ -72,3 +72,53 @@ export async function POST(req) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
+
+/* DELETE — undo a payment (subtracts from amount_paid, reverts status) */
+export async function DELETE(req) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const paymentId = searchParams.get("id");
+    if (!paymentId) return NextResponse.json({ error: "payment id required" }, { status: 400 });
+
+    // Get the payment first
+    const { data: pmt, error: pErr } = await supabase
+      .from("payments")
+      .select("invoice_id, amount")
+      .eq("id", paymentId)
+      .single();
+    if (pErr) throw pErr;
+    if (!pmt) return NextResponse.json({ error: "payment not found" }, { status: 404 });
+
+    // Get the invoice
+    const { data: inv, error: iErr } = await supabase
+      .from("invoices")
+      .select("amount, amount_paid")
+      .eq("id", pmt.invoice_id)
+      .single();
+    if (iErr) throw iErr;
+
+    // Delete the payment record
+    const { error: dErr } = await supabase
+      .from("payments")
+      .delete()
+      .eq("id", paymentId);
+    if (dErr) throw dErr;
+
+    // Recalculate invoice paid + status
+    const newPaid = Math.max(0, parseFloat(inv.amount_paid) - parseFloat(pmt.amount));
+    let status;
+    if (newPaid <= 0) status = "open";
+    else if (newPaid >= parseFloat(inv.amount)) status = "paid";
+    else status = "partial";
+
+    const { error: uErr } = await supabase
+      .from("invoices")
+      .update({ amount_paid: newPaid, status })
+      .eq("id", pmt.invoice_id);
+    if (uErr) throw uErr;
+
+    return NextResponse.json({ ok: true, newPaid, status });
+  } catch (e) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
+  }
+}
