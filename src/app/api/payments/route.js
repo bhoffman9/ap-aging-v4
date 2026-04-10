@@ -3,11 +3,36 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-/* GET — list payments for an invoice */
+/* GET — list payments for an invoice, OR recent N payments across all invoices */
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
     const invoiceId = searchParams.get("invoiceId");
+    const recent = searchParams.get("recent");
+
+    // Recent payments mode — joins with invoices for context
+    if (recent) {
+      const limit = Math.min(parseInt(recent, 10) || 20, 100);
+      const { data, error } = await supabase
+        .from("payments")
+        .select("*, invoices(vendor_name, invoice_number, amount, amount_paid)")
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      if (error) throw error;
+      return NextResponse.json(data.map((p) => ({
+        id: p.id,
+        invoiceId: p.invoice_id,
+        amount: parseFloat(p.amount) || 0,
+        paymentDate: p.payment_date,
+        note: p.note || "",
+        createdAt: p.created_at,
+        vendorName: p.invoices?.vendor_name || "",
+        invoiceNumber: p.invoices?.invoice_number || "",
+        invoiceAmount: parseFloat(p.invoices?.amount) || 0,
+        invoiceAmountPaid: parseFloat(p.invoices?.amount_paid) || 0,
+      })));
+    }
+
     if (!invoiceId) return NextResponse.json({ error: "invoiceId required" }, { status: 400 });
 
     const { data, error } = await supabase

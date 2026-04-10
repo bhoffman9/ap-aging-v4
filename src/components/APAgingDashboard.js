@@ -43,6 +43,12 @@ const fmt = (n) => n.toLocaleString("en-US", { style: "currency", currency: "USD
 const fmtDate = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
+/* ── Status icon for color-blind accessibility ── */
+const STATUS_ICON = { paid: "✓", partial: "◐", open: "○", void: "✕", current: "○", "1-30": "◔", "31-60": "◑", "61-90": "◕", "90+": "●" };
+
+/* ── Form draft persistence key ── */
+const DRAFT_KEY = "ap-aging-invoice-draft";
+
 /* ══════════════════════════════════════════════════════
    Main Dashboard Component
    ══════════════════════════════════════════════════════ */
@@ -84,7 +90,19 @@ export default function APAgingDashboard() {
   const [batchPayDate, setBatchPayDate] = useState(todayStr());
   const [batchPaying, setBatchPaying] = useState(false);
 
+  // ── New: search, toasts, inline edit, recent payments, confirm modal ──
+  const [searchQuery, setSearchQuery] = useState("");
+  const [toasts, setToasts] = useState([]); // [{id, type, message, action?, actionLabel?}]
+  const [editingCell, setEditingCell] = useState(null); // {invoiceId, field, value}
+  const [recentPayments, setRecentPayments] = useState([]);
+  const [showRecentPayments, setShowRecentPayments] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null); // {message, onConfirm}
+  const [quickFilter, setQuickFilter] = useState(null); // 'overdue' | 'thisWeek' | null
+  const [printMode, setPrintMode] = useState(false);
+
   const fileRef = useRef();
+  const searchInputRef = useRef();
+  const draftSaveTimer = useRef();
 
   /* ── Load invoices ── */
   const load = useCallback(async () => {
@@ -107,6 +125,90 @@ export default function APAgingDashboard() {
   }, []);
 
   useEffect(() => { if (view === "equipment") loadEquipment(); }, [view, loadEquipment]);
+
+  /* ── Toast notifications ── */
+  const addToast = useCallback((message, type = "info", opts = {}) => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t, { id, message, type, action: opts.action, actionLabel: opts.actionLabel }]);
+    if (!opts.action) {
+      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), opts.duration || 3500);
+    }
+    return id;
+  }, []);
+  const removeToast = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+
+  /* ── Confirm dialog wrapper (replaces window.confirm) ── */
+  const askConfirm = useCallback((message) => new Promise((resolve) => {
+    setConfirmDialog({ message, onConfirm: () => { setConfirmDialog(null); resolve(true); }, onCancel: () => { setConfirmDialog(null); resolve(false); } });
+  }), []);
+
+  /* ── Recent payments (last 20) ── */
+  const loadRecentPayments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/payments?recent=20");
+      const data = await res.json();
+      if (Array.isArray(data)) setRecentPayments(data);
+    } catch (e) { /* silent */ }
+  }, []);
+  useEffect(() => { loadRecentPayments(); }, [loadRecentPayments, invoices.length]);
+
+  /* ── Auto-save invoice modal draft to localStorage ── */
+  useEffect(() => {
+    if (!showModal || editInvoice) return; // only save drafts for new invoices
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    draftSaveTimer.current = setTimeout(() => {
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify(formData)); } catch {}
+    }, 500);
+    return () => { if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current); };
+  }, [formData, showModal, editInvoice]);
+
+  /* ── Keyboard shortcuts (Cmd/Ctrl+K, N, Esc) ── */
+  useEffect(() => {
+    const handler = (e) => {
+      // Skip if typing in input/textarea (except Esc)
+      const tag = (e.target.tagName || "").toLowerCase();
+      const inField = tag === "input" || tag === "textarea" || tag === "select";
+
+      // Esc closes modals
+      if (e.key === "Escape") {
+        if (showModal) setShowModal(false);
+        else if (paymentInvoice) setPaymentInvoice(null);
+        else if (showBatchPayModal && !batchPaying) setShowBatchPayModal(false);
+        else if (showBatchModal) { setShowBatchModal(false); setUploadQueue([]); }
+        else if (confirmDialog) confirmDialog.onCancel();
+        else if (showRecentPayments) setShowRecentPayments(false);
+        return;
+      }
+
+      if (inField) return;
+
+      // Cmd/Ctrl+K → focus search
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      // N → new invoice
+      if (e.key.toLowerCase() === "n" && !showModal && !paymentInvoice) {
+        e.preventDefault();
+        // Try to restore draft
+        let draft = {};
+        try {
+          const saved = localStorage.getItem(DRAFT_KEY);
+          if (saved) draft = JSON.parse(saved);
+        } catch {}
+        setFormData({ vendorName: "", invoiceNumber: "", invoiceDate: "", dueDate: "", amount: "", terms: "", description: "", ...draft });
+        setPdfFile(null); setEditInvoice(null); setShowModal(true);
+      }
+      // / → focus search
+      if (e.key === "/" && !showModal && !paymentInvoice) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showModal, paymentInvoice, showBatchPayModal, batchPaying, showBatchModal, confirmDialog, showRecentPayments]);
 
   /* ── Extract single PDF: regex first, Haiku fallback ── */
   const extractOne = async (file) => {
@@ -250,12 +352,14 @@ export default function APAgingDashboard() {
         setPdfFile(null);
         setFormData({});
         setEditInvoice(null);
+        try { localStorage.removeItem(DRAFT_KEY); } catch {}
+        addToast(editInvoice ? "Invoice updated" : "Invoice saved", "success");
       }
       load();
       return true;
     } else {
       const err = await res.json();
-      if (!data) alert(err.error || "Save failed");
+      if (!data) addToast(err.error || "Save failed", "error");
       return false;
     }
   };
@@ -295,7 +399,10 @@ export default function APAgingDashboard() {
     setPaymentInvoice(inv);
     setPaymentMode("full");
     setPaymentAmount(String(inv.amount - inv.amountPaid));
-    setPaymentDate(todayStr());
+    // Smart default: if invoice has a due date in the future, use that; otherwise today
+    const today = todayStr();
+    const smartDate = inv.dueDate && inv.dueDate >= today ? inv.dueDate : today;
+    setPaymentDate(smartDate);
     setLoadingPayments(true);
 
     try {
@@ -326,9 +433,10 @@ export default function APAgingDashboard() {
     if (res.ok) {
       setPaymentInvoice(null);
       load();
+      addToast(`Payment of ${fmt(amt)} recorded for ${paymentInvoice.vendorName}`, "success");
     } else {
       const err = await res.json();
-      alert(err.error || "Payment failed");
+      addToast(err.error || "Payment failed", "error");
     }
   };
 
@@ -375,6 +483,8 @@ export default function APAgingDashboard() {
 
   const submitBatchPay = async () => {
     setBatchPaying(true);
+    let count = 0;
+    let total = 0;
     try {
       for (const item of batchPayItems) {
         const amt = parseFloat(item.amount);
@@ -384,10 +494,13 @@ export default function APAgingDashboard() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ invoiceId: item.invoice.id, amount: amt, paymentDate: batchPayDate }),
         });
+        count++;
+        total += amt;
       }
       setShowBatchPayModal(false);
       setSelectedInvoices(new Set());
       load();
+      addToast(`${count} payment${count !== 1 ? "s" : ""} totaling ${fmt(total)} recorded`, "success");
     } finally {
       setBatchPaying(false);
     }
@@ -402,7 +515,6 @@ export default function APAgingDashboard() {
       const r = await fetch(`/api/payments?invoiceId=${inv.id}`);
       const payments = await r.json();
       if (Array.isArray(payments) && payments.length > 0) {
-        // payments are ordered by payment_date desc, take the first
         lastPaymentId = payments[0].id;
         lastPaymentAmount = payments[0].amount;
       }
@@ -411,35 +523,90 @@ export default function APAgingDashboard() {
     const msg = lastPaymentId
       ? `Undo last payment of ${fmt(lastPaymentAmount)} on invoice ${inv.invoiceNumber} from ${inv.vendorName}?`
       : `Reopen invoice ${inv.invoiceNumber} from ${inv.vendorName}? This will set it back to ${inv.amountPaid > 0 ? "partial" : "open"}.`;
-    if (!confirm(msg)) return;
+    if (!(await askConfirm(msg))) return;
 
     if (lastPaymentId) {
-      // True undo: delete the most recent payment record (auto-recalculates invoice)
       await fetch(`/api/payments?id=${lastPaymentId}`, { method: "DELETE" });
+      addToast(`Payment of ${fmt(lastPaymentAmount)} undone`, "success");
     } else {
-      // Fallback: just flip the status
       const newStatus = inv.amountPaid > 0 ? "partial" : "open";
       await fetch(`/api/invoices?id=${inv.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus }),
       });
+      addToast(`Invoice ${inv.invoiceNumber} reopened`, "success");
     }
     load();
   };
 
   /* ── Delete invoice ── */
   const deleteInvoice = async (inv) => {
-    if (!confirm(`Delete invoice ${inv.invoiceNumber} from ${inv.vendorName}?`)) return;
+    if (!(await askConfirm(`Delete invoice ${inv.invoiceNumber} from ${inv.vendorName}?`))) return;
     await fetch(`/api/invoices?id=${inv.id}`, { method: "DELETE" });
     load();
+    addToast(`Invoice ${inv.invoiceNumber} deleted`, "success");
+  };
+
+  /* ── Bulk delete selected invoices ── */
+  const bulkDelete = async () => {
+    const ids = [...selectedInvoices];
+    if (ids.length === 0) return;
+    if (!(await askConfirm(`Delete ${ids.length} selected invoice${ids.length !== 1 ? "s" : ""}? This cannot be undone.`))) return;
+    for (const id of ids) {
+      await fetch(`/api/invoices?id=${id}`, { method: "DELETE" });
+    }
+    setSelectedInvoices(new Set());
+    load();
+    addToast(`${ids.length} invoice${ids.length !== 1 ? "s" : ""} deleted`, "success");
+  };
+
+  /* ── Undo a specific payment by ID (used by recent payments panel) ── */
+  const undoPayment = async (payment) => {
+    if (!(await askConfirm(`Undo payment of ${fmt(payment.amount)} for ${payment.vendorName} invoice ${payment.invoiceNumber}?`))) return;
+    const r = await fetch(`/api/payments?id=${payment.id}`, { method: "DELETE" });
+    if (r.ok) {
+      addToast(`Payment of ${fmt(payment.amount)} undone`, "success");
+      load();
+      loadRecentPayments();
+    } else {
+      addToast("Undo failed", "error");
+    }
+  };
+
+  /* ── Inline edit save ── */
+  const saveInlineEdit = async () => {
+    if (!editingCell) return;
+    const { invoiceId, field, value } = editingCell;
+    const inv = invoices.find((i) => i.id === invoiceId);
+    if (!inv) { setEditingCell(null); return; }
+    const newVal = field === "amount" ? parseFloat(value) : value;
+    if (field === "amount" && (isNaN(newVal) || newVal < 0)) {
+      addToast("Invalid amount", "error");
+      setEditingCell(null);
+      return;
+    }
+    // Optimistic update
+    setInvoices((prev) => prev.map((i) => i.id === invoiceId ? { ...i, [field]: newVal } : i));
+    setEditingCell(null);
+    try {
+      await fetch("/api/invoices", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: invoiceId, [field]: newVal }),
+      });
+      addToast(`${field === "amount" ? "Amount" : "Due date"} updated`, "success");
+    } catch (e) {
+      addToast("Update failed — reverting", "error");
+      load();
+    }
   };
 
   /* ── Download PDF ── */
   const downloadPdf = async (inv) => {
     if (!sb || !inv.pdfPath) return;
     const { data, error } = await sb.storage.from("invoices").download(inv.pdfPath);
-    if (error) { alert("Download failed"); return; }
+    if (error) { addToast("Download failed", "error"); return; }
     const url = URL.createObjectURL(data);
     const a = document.createElement("a"); a.href = url;
     a.download = inv.pdfPath.split("/").pop(); a.click();
@@ -449,7 +616,7 @@ export default function APAgingDashboard() {
   const downloadVendorPdfs = async (vendorName) => {
     const nKey = normalizeVendor(vendorName);
     const vendorInvs = invoices.filter((i) => normalizeVendor(i.vendorName) === nKey && i.pdfPath);
-    if (!vendorInvs.length) { alert("No PDFs for this vendor"); return; }
+    if (!vendorInvs.length) { addToast("No PDFs for this vendor", "error"); return; }
     for (const inv of vendorInvs) await downloadPdf(inv);
   };
 
@@ -460,11 +627,23 @@ export default function APAgingDashboard() {
   };
 
   const openInvoices = invoices.filter((i) => i.status !== "paid" && i.status !== "void");
+
+  // Quick filter (from clickable home cards)
+  const todayISO = todayStr();
+  const wkAhead = (() => { const d = new Date(); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10); })();
+
+  const q = searchQuery.trim().toLowerCase();
   const filtered = openInvoices.filter((i) => {
     if (filterBucket && agingBucket(i.dueDate) !== filterBucket) return false;
     if (filterVendor && normalizeVendor(i.vendorName) !== normalizeVendor(filterVendor)) return false;
     if (filterInvDate && i.invoiceDate !== filterInvDate) return false;
     if (filterDueDate && i.dueDate !== filterDueDate) return false;
+    if (quickFilter === "overdue" && !(i.dueDate && i.dueDate < todayISO)) return false;
+    if (quickFilter === "thisWeek" && !(i.dueDate && i.dueDate >= todayISO && i.dueDate <= wkAhead)) return false;
+    if (q) {
+      const hay = `${i.vendorName || ""} ${i.invoiceNumber || ""} ${i.amount || ""} ${i.description || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   }).sort((a, b) => {
     let va = a[sortField], vb = b[sortField];
@@ -496,21 +675,43 @@ export default function APAgingDashboard() {
       {/* ── Header ── */}
       <div style={S.header}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={S.logo}>AP</div>
+          <div style={S.logo} aria-hidden="true">AP</div>
           <div>
             <h1 style={S.title}>Accounts Payable Aging</h1>
             <p style={S.subtitle}>{invoices.length} invoices · {fmt(totalOutstanding)} outstanding</p>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button style={{ ...S.btn, ...(view === "aging" ? S.btnActive : {}) }} onClick={() => setView("aging")}>Aging View</button>
-          <button style={{ ...S.btn, ...(view === "vendors" ? S.btnActive : {}) }} onClick={() => { setView("vendors"); setSelectedVendor(null); }}>Vendor Folders</button>
-          <button style={{ ...S.btn, ...(view === "equipment" ? S.btnActive : {}) }} onClick={() => setView("equipment")}>Equipment</button>
-          <button style={{ ...S.btn, ...(view === "expected" ? S.btnActive : {}) }} onClick={() => { setView("expected"); loadEquipment(); }}>Expected</button>
-          <button style={{ ...S.btn, ...(view === "analytics" ? S.btnActive : {}) }} onClick={() => setView("analytics")}>Analytics</button>
-          <button style={S.btnPrimary} onClick={() => {
-            setFormData({ vendorName: "", invoiceNumber: "", invoiceDate: "", dueDate: "", amount: "", terms: "", description: "" });
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {/* Global search */}
+          <div style={{ position: "relative" }}>
+            <span aria-hidden="true" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#94a3b8", fontSize: 13, pointerEvents: "none" }}>🔍</span>
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search vendors, invoices, amounts… (⌘K)"
+              aria-label="Search invoices"
+              style={{ ...S.input, padding: "8px 28px 8px 30px", fontSize: 12, width: 260, margin: 0 }}
+            />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery("")} aria-label="Clear search" style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 14, padding: 4 }}>×</button>
+            )}
+          </div>
+          <button style={{ ...S.btn, ...(view === "aging" ? S.btnActive : {}) }} onClick={() => setView("aging")} aria-label="Aging View">Aging View</button>
+          <button style={{ ...S.btn, ...(view === "vendors" ? S.btnActive : {}) }} onClick={() => { setView("vendors"); setSelectedVendor(null); }} aria-label="Vendor Folders">Vendor Folders</button>
+          <button style={{ ...S.btn, ...(view === "equipment" ? S.btnActive : {}) }} onClick={() => setView("equipment")} aria-label="Equipment">Equipment</button>
+          <button style={{ ...S.btn, ...(view === "expected" ? S.btnActive : {}) }} onClick={() => { setView("expected"); loadEquipment(); }} aria-label="Expected">Expected</button>
+          <button style={{ ...S.btn, ...(view === "analytics" ? S.btnActive : {}) }} onClick={() => setView("analytics")} aria-label="Analytics">Analytics</button>
+          <button style={S.btn} onClick={() => setShowRecentPayments(true)} aria-label="Recent payments" title="Recent payments">💸 Payments</button>
+          <button style={S.btnPrimary} aria-label="Add new invoice (N)" title="Add invoice (N)" onClick={() => {
+            // Restore draft if any
+            let draft = {};
+            try { const saved = localStorage.getItem(DRAFT_KEY); if (saved) draft = JSON.parse(saved); } catch {}
+            const hasDraft = draft && Object.values(draft).some((v) => v);
+            setFormData({ vendorName: "", invoiceNumber: "", invoiceDate: "", dueDate: "", amount: "", terms: "", description: "", ...draft });
             setPdfFile(null); setEditInvoice(null); setShowModal(true);
+            if (hasDraft) addToast("Restored unsaved draft", "info");
           }}>+ Add Invoice</button>
         </div>
       </div>
@@ -531,24 +732,55 @@ export default function APAgingDashboard() {
         const paidThisMonthAmt = paidThisMonth.reduce((s, i) => s + i.amount, 0);
 
         const cards = [
-          { label: "Total Outstanding", value: fmt(totalOutstanding), sub: `${openInvoices.length} open invoices`, color: totalOutstanding > 0 ? "#ef4444" : "#22c55e" },
-          { label: "Due This Week", value: fmt(dueThisWeekAmt), sub: `${dueThisWeek.length} invoices`, color: dueThisWeekAmt > 0 ? "#f59e0b" : "#22c55e" },
-          { label: "Overdue", value: fmt(overdueAmt), sub: `${overdue.length} past due`, color: overdueAmt > 0 ? "#ef4444" : "#22c55e" },
-          { label: "Paid This Month", value: fmt(paidThisMonthAmt), sub: `${paidThisMonth.length} invoices`, color: "#22c55e" },
+          { label: "Total Outstanding", value: fmt(totalOutstanding), sub: `${openInvoices.length} open invoices`, color: totalOutstanding > 0 ? "#ef4444" : "#22c55e", filterKey: null },
+          { label: "Due This Week", value: fmt(dueThisWeekAmt), sub: `${dueThisWeek.length} invoices`, color: dueThisWeekAmt > 0 ? "#f59e0b" : "#22c55e", filterKey: "thisWeek" },
+          { label: "Overdue", value: fmt(overdueAmt), sub: `${overdue.length} past due`, color: overdueAmt > 0 ? "#ef4444" : "#22c55e", filterKey: "overdue" },
+          { label: "Paid This Month", value: fmt(paidThisMonthAmt), sub: `${paidThisMonth.length} invoices`, color: "#22c55e", filterKey: null },
         ];
 
         return (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
-            {cards.map((c, i) => (
-              <div key={i} style={{ padding: "16px 20px", borderRadius: 10, border: "1px solid #1e293b", background: "#0d1117" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{c.label}</div>
-                <div style={{ fontSize: 24, fontWeight: 800, color: c.color, fontVariantNumeric: "tabular-nums" }}>{c.value}</div>
-                <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>{c.sub}</div>
-              </div>
-            ))}
+            {cards.map((c, i) => {
+              const isActive = c.filterKey && quickFilter === c.filterKey;
+              const isClickable = !!c.filterKey;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  aria-pressed={isActive}
+                  aria-label={`${c.label}: ${c.value}${isClickable ? " (click to filter)" : ""}`}
+                  onClick={() => {
+                    if (!isClickable) return;
+                    setQuickFilter(quickFilter === c.filterKey ? null : c.filterKey);
+                    setView("aging");
+                  }}
+                  style={{
+                    padding: "16px 20px", borderRadius: 10,
+                    border: `1px solid ${isActive ? c.color : "#1e293b"}`,
+                    background: isActive ? `${c.color}11` : "#0d1117",
+                    cursor: isClickable ? "pointer" : "default",
+                    textAlign: "left", outline: "none", color: "inherit",
+                    transition: "all .15s",
+                  }}
+                >
+                  <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>{c.label}{isClickable && <span style={{ marginLeft: 6, fontSize: 9, color: "#64748b" }}>{isActive ? "✓ filtered" : "↗ click to filter"}</span>}</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: c.color, fontVariantNumeric: "tabular-nums" }}>{c.value}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>{c.sub}</div>
+                </button>
+              );
+            })}
           </div>
         );
       })()}
+
+      {/* Quick filter chip indicator */}
+      {quickFilter && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", marginBottom: 12, background: "#0c1a3d", border: "1px solid #3b82f6", borderRadius: 8 }}>
+          <span style={{ fontSize: 12, color: "#94a3b8" }}>Filtering by:</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#3b82f6" }}>{quickFilter === "overdue" ? "Overdue invoices" : "Due this week"}</span>
+          <button onClick={() => setQuickFilter(null)} aria-label="Clear quick filter" style={{ marginLeft: "auto", background: "transparent", border: "1px solid #1e293b", color: "#94a3b8", padding: "4px 10px", borderRadius: 4, fontSize: 11, cursor: "pointer" }}>Clear</button>
+        </div>
+      )}
 
       {/* ── Drop Zone ── */}
       <div
@@ -628,8 +860,14 @@ export default function APAgingDashboard() {
 
           {/* Invoice Table */}
           <div style={S.tableWrap}>
-            {loading ? <div style={{ padding: 40, textAlign: "center", color: "#475569" }}>Loading…</div>
-            : filtered.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#475569" }}>{filterBucket ? "No invoices in this bucket" : "No open invoices — drop a PDF above"}</div>
+            {loading ? (
+              <div style={{ padding: 16 }}>
+                {[...Array(5)].map((_, i) => (
+                  <div key={i} className="skeleton" style={{ height: 36, marginBottom: 8 }} />
+                ))}
+              </div>
+            )
+            : filtered.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>{searchQuery ? `No invoices match "${searchQuery}"` : filterBucket ? "No invoices in this bucket" : quickFilter === "overdue" ? "No overdue invoices 🎉" : quickFilter === "thisWeek" ? "Nothing due this week" : "No open invoices — drop a PDF above"}</div>
             : (
               <>
               {/* Batch pay bar */}
@@ -639,8 +877,9 @@ export default function APAgingDashboard() {
                     {selectedInvoices.size} selected · {fmt(invoices.filter(i => selectedInvoices.has(i.id)).reduce((s, i) => s + (i.amount - i.amountPaid), 0))} total
                   </span>
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button style={{ ...S.btn, color: "#64748b" }} onClick={() => setSelectedInvoices(new Set())}>Clear</button>
-                    <button style={{ ...S.btnPrimary, padding: "8px 20px" }} onClick={openBatchPayModal}>Pay Selected</button>
+                    <button style={{ ...S.btn, color: "#94a3b8" }} onClick={() => setSelectedInvoices(new Set())} aria-label="Clear selection">Clear</button>
+                    <button style={{ ...S.btn, color: "#ef4444", borderColor: "#ef444433" }} onClick={bulkDelete} aria-label="Delete selected invoices">🗑️ Delete</button>
+                    <button style={{ ...S.btnPrimary, padding: "8px 20px" }} onClick={openBatchPayModal} aria-label="Pay selected invoices">Pay Selected</button>
                   </div>
                 </div>
               )}
@@ -659,31 +898,65 @@ export default function APAgingDashboard() {
                     const bucket = agingBucket(inv.dueDate);
                     const bInfo = BUCKETS.find((b) => b.key === bucket);
                     const outstanding = inv.amount - inv.amountPaid;
+                    const isEditingAmt = editingCell?.invoiceId === inv.id && editingCell?.field === "amount";
+                    const isEditingDue = editingCell?.invoiceId === inv.id && editingCell?.field === "dueDate";
                     return (
                       <tr key={inv.id} style={{ ...S.tr, background: selectedInvoices.has(inv.id) ? "#0c1a3d" : "" }}>
-                        <td style={S.td}><input type="checkbox" checked={selectedInvoices.has(inv.id)} onChange={() => toggleSelect(inv.id)} style={{ cursor: "pointer" }} /></td>
+                        <td style={S.td}><input type="checkbox" checked={selectedInvoices.has(inv.id)} onChange={() => toggleSelect(inv.id)} aria-label={`Select invoice ${inv.invoiceNumber}`} style={{ cursor: "pointer", width: 16, height: 16 }} /></td>
                         <td style={S.td}>{inv.vendorName}</td>
                         <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{inv.invoiceNumber}</td>
                         <td style={S.td}>{fmtDate(inv.invoiceDate)}</td>
-                        <td style={S.td}>{fmtDate(inv.dueDate)}</td>
-                        <td style={{ ...S.td, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-                          {fmt(outstanding)}
-                          {inv.amountPaid > 0 && <span style={{ fontSize: 10, color: "#22c55e", marginLeft: 4 }}>({fmt(inv.amountPaid)} paid)</span>}
+                        <td style={{ ...S.td, cursor: isEditingDue ? "auto" : "pointer" }}
+                          onClick={() => !isEditingDue && setEditingCell({ invoiceId: inv.id, field: "dueDate", value: inv.dueDate || "" })}
+                          title="Click to edit due date">
+                          {isEditingDue ? (
+                            <input
+                              type="date" autoFocus
+                              value={editingCell.value}
+                              onChange={(e) => setEditingCell({ ...editingCell, value: e.target.value })}
+                              onBlur={saveInlineEdit}
+                              onKeyDown={(e) => { if (e.key === "Enter") saveInlineEdit(); if (e.key === "Escape") setEditingCell(null); }}
+                              aria-label="Edit due date"
+                              style={{ ...S.input, padding: "4px 6px", fontSize: 12, margin: 0 }}
+                            />
+                          ) : fmtDate(inv.dueDate)}
+                        </td>
+                        <td style={{ ...S.td, fontWeight: 600, fontVariantNumeric: "tabular-nums", cursor: isEditingAmt ? "auto" : "pointer" }}
+                          onClick={() => !isEditingAmt && setEditingCell({ invoiceId: inv.id, field: "amount", value: String(inv.amount) })}
+                          title="Click to edit amount">
+                          {isEditingAmt ? (
+                            <input
+                              type="number" step="0.01" autoFocus
+                              value={editingCell.value}
+                              onChange={(e) => setEditingCell({ ...editingCell, value: e.target.value })}
+                              onBlur={saveInlineEdit}
+                              onKeyDown={(e) => { if (e.key === "Enter") saveInlineEdit(); if (e.key === "Escape") setEditingCell(null); }}
+                              aria-label="Edit amount"
+                              style={{ ...S.input, padding: "4px 6px", fontSize: 13, margin: 0, width: 100, textAlign: "right" }}
+                            />
+                          ) : (
+                            <>
+                              {fmt(outstanding)}
+                              {inv.amountPaid > 0 && <span style={{ fontSize: 10, color: "#22c55e", marginLeft: 4 }}>({fmt(inv.amountPaid)} paid)</span>}
+                            </>
+                          )}
                         </td>
                         <td style={{ ...S.td, fontSize: 11, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={inv.description || ""}>{inv.description || "—"}</td>
                         <td style={S.td}>
-                          <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, color: bInfo?.color, background: bInfo?.bg, border: `1px solid ${bInfo?.color}33` }}>{bInfo?.label}</span>
+                          <span aria-label={`Aging bucket: ${bInfo?.label}`} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, color: bInfo?.color, background: bInfo?.bg, border: `1px solid ${bInfo?.color}33` }}>
+                            <span aria-hidden="true">{STATUS_ICON[bucket] || ""}</span>{bInfo?.label}
+                          </span>
                         </td>
                         <td style={S.td}>
                           <div style={{ display: "flex", gap: 4 }}>
-                            <button style={S.btnSmall} onClick={() => openPaymentModal(inv)} title="Record payment">💰</button>
+                            <button style={S.btnSmall} onClick={() => openPaymentModal(inv)} title="Record payment" aria-label={`Record payment for invoice ${inv.invoiceNumber}`}>💰</button>
                             <button style={S.btnSmall} onClick={() => {
                               setEditInvoice(inv);
                               setFormData({ vendorName: inv.vendorName, invoiceNumber: inv.invoiceNumber, invoiceDate: inv.invoiceDate || "", dueDate: inv.dueDate || "", amount: inv.amount, terms: inv.terms || "", description: inv.description || "" });
                               setPdfFile(null); setShowModal(true);
-                            }} title="Edit">✏️</button>
-                            {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)} title="Download PDF">📥</button>}
-                            <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)} title="Delete">🗑️</button>
+                            }} title="Edit invoice" aria-label={`Edit invoice ${inv.invoiceNumber}`}>✏️</button>
+                            {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)} title="Download PDF" aria-label={`Download PDF for invoice ${inv.invoiceNumber}`}>📥</button>}
+                            <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)} title="Delete invoice" aria-label={`Delete invoice ${inv.invoiceNumber}`}>🗑️</button>
                           </div>
                         </td>
                       </tr>
@@ -754,11 +1027,11 @@ export default function APAgingDashboard() {
                         <td style={S.td}>{inv.vendorName}</td>
                         <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{inv.invoiceNumber}</td>
                         <td style={S.td}>{fmt(inv.amount)}</td>
-                        <td style={S.td}><span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#052e16" : "#1e1b2e", color: inv.status === "paid" ? "#22c55e" : "#8b5cf6" }}>{inv.status}</span></td>
+                        <td style={S.td}><span aria-label={`Status: ${inv.status}`} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#052e16" : "#1e1b2e", color: inv.status === "paid" ? "#22c55e" : "#8b5cf6" }}><span aria-hidden="true">{STATUS_ICON[inv.status] || ""}</span>{inv.status}</span></td>
                         <td style={S.td}>
-                          <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(inv)} title="Reopen invoice">↩️</button>
-                          {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)}>📥</button>}
-                          <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)}>🗑️</button>
+                          <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(inv)} title="Reopen invoice" aria-label={`Reopen invoice ${inv.invoiceNumber}`}>↩️</button>
+                          {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)} aria-label={`Download PDF for ${inv.invoiceNumber}`}>📥</button>}
+                          <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)} aria-label={`Delete invoice ${inv.invoiceNumber}`}>🗑️</button>
                         </td>
                       </tr>
                     ))}
@@ -817,19 +1090,19 @@ export default function APAgingDashboard() {
                       <td style={S.td}>{fmtDate(inv.dueDate)}</td>
                       <td style={{ ...S.td, fontVariantNumeric: "tabular-nums" }}>{fmt(inv.amount)}</td>
                       <td style={{ ...S.td, color: "#22c55e", fontVariantNumeric: "tabular-nums" }}>{fmt(inv.amountPaid)}</td>
-                      <td style={S.td}><span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#052e16" : inv.status === "partial" ? "#2d1f05" : "#0c1a3d", color: inv.status === "paid" ? "#22c55e" : inv.status === "partial" ? "#f59e0b" : "#3b82f6" }}>{inv.status}</span></td>
+                      <td style={S.td}><span aria-label={`Status: ${inv.status}`} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#052e16" : inv.status === "partial" ? "#2d1f05" : "#0c1a3d", color: inv.status === "paid" ? "#22c55e" : inv.status === "partial" ? "#f59e0b" : "#3b82f6" }}><span aria-hidden="true">{STATUS_ICON[inv.status] || ""}</span>{inv.status}</span></td>
                       <td style={S.td}>{inv.status !== "paid" && inv.status !== "void" && <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, color: bInfo?.color, background: bInfo?.bg, border: `1px solid ${bInfo?.color}33` }}>{bInfo?.label}</span>}</td>
                       <td style={S.td}>
                         <div style={{ display: "flex", gap: 4 }}>
-                          {inv.status !== "paid" && inv.status !== "void" && <button style={S.btnSmall} onClick={() => openPaymentModal(inv)} title="Record payment">💰</button>}
-                          {(inv.status === "paid" || inv.status === "void") && <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(inv)} title="Reopen invoice">↩️</button>}
-                          <button style={S.btnSmall} onClick={() => {
+                          {inv.status !== "paid" && inv.status !== "void" && <button style={S.btnSmall} onClick={() => openPaymentModal(inv)} title="Record payment" aria-label={`Record payment for invoice ${inv.invoiceNumber}`}>💰</button>}
+                          {(inv.status === "paid" || inv.status === "void") && <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(inv)} title="Reopen invoice" aria-label={`Reopen invoice ${inv.invoiceNumber}`}>↩️</button>}
+                          <button style={S.btnSmall} aria-label={`Edit invoice ${inv.invoiceNumber}`} title="Edit invoice" onClick={() => {
                             setEditInvoice(inv);
                             setFormData({ vendorName: inv.vendorName, invoiceNumber: inv.invoiceNumber, invoiceDate: inv.invoiceDate || "", dueDate: inv.dueDate || "", amount: inv.amount, terms: inv.terms || "", description: inv.description || "" });
                             setPdfFile(null); setShowModal(true);
                           }}>✏️</button>
-                          {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)}>📥</button>}
-                          <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)}>🗑️</button>
+                          {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)} aria-label={`Download PDF for ${inv.invoiceNumber}`}>📥</button>}
+                          <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)} aria-label={`Delete invoice ${inv.invoiceNumber}`}>🗑️</button>
                         </div>
                       </td>
                     </tr>
@@ -978,7 +1251,14 @@ export default function APAgingDashboard() {
 
         return (
           <>
-            <h2 style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 12 }}>Vendor Analytics</h2>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0" }}>Vendor Analytics</h2>
+              <button style={S.btn} onClick={() => window.print()} aria-label="Print analytics report" className="no-print">🖨️ Print Report</button>
+            </div>
+            <div className="print-only" style={{ marginBottom: 16 }}>
+              <h1 style={{ fontSize: 18, fontWeight: 800, color: "#000" }}>Vendor Analytics Report</h1>
+              <p style={{ fontSize: 12, color: "#000" }}>Generated {new Date().toLocaleDateString()} · {invoices.length} invoices · {fmt(totalOutstanding)} outstanding</p>
+            </div>
             <div style={S.tableWrap}>
               <table style={S.table}>
                 <thead><tr>
@@ -1126,15 +1406,25 @@ export default function APAgingDashboard() {
           MODAL — Add / Edit Invoice
           ══════════════════════════════════════════════ */}
       {showModal && (
-        <div style={S.overlay} onClick={() => setShowModal(false)}>
+        <div style={S.overlay} onClick={() => setShowModal(false)} role="dialog" aria-modal="true" aria-label="Add or edit invoice">
           <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+            {/* Vendor autocomplete datalist */}
+            <datalist id="vendor-options">
+              {vendorList.map((v) => <option key={v} value={v} />)}
+            </datalist>
+
             <h3 style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 16 }}>
               {editInvoice ? "Edit Invoice" : "Add Invoice"}
+              {!editInvoice && (() => {
+                let hasDraft = false;
+                try { const s = localStorage.getItem(DRAFT_KEY); if (s && Object.values(JSON.parse(s)).some((v) => v)) hasDraft = true; } catch {}
+                return hasDraft ? <span style={{ marginLeft: 10, fontSize: 11, color: "#f59e0b", fontWeight: 500 }}>· draft auto-saved</span> : null;
+              })()}
             </h3>
             {pdfFile && <div style={{ marginBottom: 12, padding: "8px 12px", background: "#0d1117", borderRadius: 6, border: "1px solid #1e293b", fontSize: 12 }}>📄 {pdfFile.name}</div>}
             <div style={S.formGrid}>
               {[
-                { key: "vendorName", label: "Vendor Name", required: true },
+                { key: "vendorName", label: "Vendor Name", required: true, autocomplete: true },
                 { key: "invoiceNumber", label: "Invoice #", required: true },
                 { key: "invoiceDate", label: "Invoice Date", type: "date" },
                 { key: "dueDate", label: "Due Date", type: "date" },
@@ -1142,19 +1432,38 @@ export default function APAgingDashboard() {
                 { key: "terms", label: "Terms" },
               ].map((f) => (
                 <label key={f.key} style={S.formLabel}>
-                  <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{f.label}{f.required ? " *" : ""}</span>
-                  <input style={S.input} type={f.type || "text"} step={f.type === "number" ? "0.01" : undefined}
-                    value={formData[f.key] || ""} onChange={(e) => setFormData((p) => ({ ...p, [f.key]: e.target.value }))} placeholder={f.label} />
+                  <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{f.label}{f.required ? " *" : ""}</span>
+                  <input
+                    style={S.input}
+                    type={f.type || "text"}
+                    step={f.type === "number" ? "0.01" : undefined}
+                    list={f.autocomplete ? "vendor-options" : undefined}
+                    value={formData[f.key] || ""}
+                    onChange={(e) => setFormData((p) => ({ ...p, [f.key]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") { e.preventDefault(); saveInvoice(); } }}
+                    placeholder={f.label}
+                    aria-label={f.label}
+                    aria-required={f.required || undefined}
+                  />
                 </label>
               ))}
             </div>
             <label style={{ ...S.formLabel, marginTop: 12 }}>
-              <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Description</span>
-              <textarea style={{ ...S.input, minHeight: 60, resize: "vertical" }} value={formData.description || ""} onChange={(e) => setFormData((p) => ({ ...p, description: e.target.value }))} />
+              <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Description</span>
+              <textarea style={{ ...S.input, minHeight: 60, resize: "vertical" }} value={formData.description || ""} onChange={(e) => setFormData((p) => ({ ...p, description: e.target.value }))} aria-label="Description" />
             </label>
-            <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
-              <button style={S.btn} onClick={() => { setShowModal(false); setPdfFile(null); }}>Cancel</button>
-              <button style={S.btnPrimary} onClick={() => saveInvoice()}>{editInvoice ? "Update" : "Save Invoice"}</button>
+            <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "space-between", alignItems: "center" }}>
+              {!editInvoice && (
+                <button style={{ ...S.btn, color: "#f59e0b", fontSize: 11 }} onClick={() => {
+                  try { localStorage.removeItem(DRAFT_KEY); } catch {}
+                  setFormData({ vendorName: "", invoiceNumber: "", invoiceDate: "", dueDate: "", amount: "", terms: "", description: "" });
+                  addToast("Draft cleared", "info");
+                }} aria-label="Clear draft">Clear Draft</button>
+              )}
+              <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+                <button style={S.btn} onClick={() => { setShowModal(false); setPdfFile(null); }} aria-label="Cancel">Cancel</button>
+                <button style={S.btnPrimary} onClick={() => saveInvoice()} aria-label={editInvoice ? "Update invoice" : "Save invoice"}>{editInvoice ? "Update" : "Save Invoice"}</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1186,7 +1495,7 @@ export default function APAgingDashboard() {
 
             <div style={S.formGrid}>
               {[
-                { key: "vendorName", label: "Vendor Name", required: true },
+                { key: "vendorName", label: "Vendor Name", required: true, autocomplete: true },
                 { key: "invoiceNumber", label: "Invoice #", required: true },
                 { key: "invoiceDate", label: "Invoice Date", type: "date" },
                 { key: "dueDate", label: "Due Date", type: "date" },
@@ -1194,9 +1503,14 @@ export default function APAgingDashboard() {
                 { key: "terms", label: "Terms" },
               ].map((f) => (
                 <label key={f.key} style={S.formLabel}>
-                  <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{f.label}{f.required ? " *" : ""}</span>
-                  <input style={S.input} type={f.type || "text"} step={f.type === "number" ? "0.01" : undefined}
+                  <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>{f.label}{f.required ? " *" : ""}</span>
+                  <input
+                    style={S.input}
+                    type={f.type || "text"}
+                    step={f.type === "number" ? "0.01" : undefined}
+                    list={f.autocomplete ? "vendor-options" : undefined}
                     value={uploadQueue[batchIndex]?.fields[f.key] || ""}
+                    aria-label={f.label}
                     onChange={(e) => {
                       const newQ = [...uploadQueue];
                       newQ[batchIndex] = { ...newQ[batchIndex], fields: { ...newQ[batchIndex].fields, [f.key]: e.target.value } };
@@ -1205,6 +1519,10 @@ export default function APAgingDashboard() {
                 </label>
               ))}
             </div>
+            {/* Shared datalist for vendor autocomplete */}
+            <datalist id="vendor-options">
+              {vendorList.map((v) => <option key={v} value={v} />)}
+            </datalist>
 
             <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
               <button style={S.btn} onClick={() => { setShowBatchModal(false); setUploadQueue([]); }}>Cancel All</button>
@@ -1395,6 +1713,95 @@ export default function APAgingDashboard() {
           </div>
         </div>
       )}
+
+      {/* ══════════════════════════════════════════════
+          MODAL — Confirm Dialog (replaces window.confirm)
+          ══════════════════════════════════════════════ */}
+      {confirmDialog && (
+        <div style={S.overlay} onClick={() => confirmDialog.onCancel()} role="alertdialog" aria-modal="true">
+          <div style={{ ...S.modal, maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: "#e2e8f0", marginBottom: 12 }}>Confirm</h3>
+            <p style={{ fontSize: 14, color: "#cbd5e1", marginBottom: 20, lineHeight: 1.5 }}>{confirmDialog.message}</p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button style={S.btn} onClick={() => confirmDialog.onCancel()} aria-label="Cancel">Cancel</button>
+              <button style={S.btnPrimary} onClick={() => confirmDialog.onConfirm()} aria-label="Confirm">Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════
+          MODAL — Recent Payments
+          ══════════════════════════════════════════════ */}
+      {showRecentPayments && (
+        <div style={S.overlay} onClick={() => setShowRecentPayments(false)} role="dialog" aria-modal="true" aria-label="Recent payments">
+          <div style={{ ...S.modal, maxWidth: 640, maxHeight: "85vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <h3 style={{ fontSize: 18, fontWeight: 800, color: "#e2e8f0" }}>Recent Payments</h3>
+              <span style={{ fontSize: 12, color: "#94a3b8" }}>Last {recentPayments.length} · click ↩️ to undo</span>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto" }}>
+              {recentPayments.length === 0 ? (
+                <div style={{ padding: 30, textAlign: "center", color: "#94a3b8", fontSize: 13 }}>No payments yet</div>
+              ) : (
+                recentPayments.map((p) => {
+                  const isCredit = (p.note || "").includes("CREDIT");
+                  return (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", marginBottom: 6, background: "#0d1117", border: "1px solid #1e293b", borderRadius: 6 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.vendorName || "(no vendor)"}</div>
+                        <div style={{ fontSize: 11, color: "#94a3b8", fontFamily: "'JetBrains Mono', monospace" }}>#{p.invoiceNumber || "—"} · {fmtDate(p.paymentDate)} {isCredit && <span style={{ color: "#f59e0b", marginLeft: 4 }}>CREDIT</span>}</div>
+                      </div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700, color: isCredit ? "#f59e0b" : "#22c55e" }}>{fmt(p.amount)}</div>
+                      <button
+                        onClick={() => undoPayment(p)}
+                        style={{ ...S.btn, color: "#f59e0b", padding: "6px 10px", fontSize: 12 }}
+                        title="Undo this payment"
+                        aria-label={`Undo payment of ${fmt(p.amount)} for ${p.vendorName} invoice ${p.invoiceNumber}`}
+                      >↩️ Undo</button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end" }}>
+              <button style={S.btn} onClick={() => setShowRecentPayments(false)} aria-label="Close">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════
+          TOAST CONTAINER
+          ══════════════════════════════════════════════ */}
+      <div role="status" aria-live="polite" aria-atomic="false" style={{ position: "fixed", bottom: 20, right: 20, display: "flex", flexDirection: "column", gap: 8, zIndex: 9999, maxWidth: 360 }}>
+        {toasts.map((t) => {
+          const colors = {
+            success: { bg: "#052e16", border: "#22c55e", color: "#22c55e", icon: "✓" },
+            error: { bg: "#1c0a0a", border: "#ef4444", color: "#ef4444", icon: "✕" },
+            info: { bg: "#0c1a3d", border: "#3b82f6", color: "#3b82f6", icon: "ℹ" },
+          };
+          const c = colors[t.type] || colors.info;
+          return (
+            <div key={t.id} style={{ background: c.bg, border: `1px solid ${c.border}`, borderRadius: 8, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 12px rgba(0,0,0,.4)", animation: "slideIn .2s" }}>
+              <span aria-hidden="true" style={{ fontSize: 16, color: c.color }}>{c.icon}</span>
+              <span style={{ flex: 1, fontSize: 13, color: "#e2e8f0" }}>{t.message}</span>
+              {t.action && (
+                <button onClick={() => { t.action(); removeToast(t.id); }} style={{ background: "transparent", border: `1px solid ${c.color}`, color: c.color, padding: "4px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{t.actionLabel || "Action"}</button>
+              )}
+              <button onClick={() => removeToast(t.id)} aria-label="Dismiss notification" style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 16, padding: 0, lineHeight: 1 }}>×</button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Keyboard shortcuts hint (small footer) */}
+      <div style={{ marginTop: 20, padding: "10px 14px", borderTop: "1px solid #1e293b", fontSize: 11, color: "#94a3b8", display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <span><kbd style={S.kbd}>⌘K</kbd> or <kbd style={S.kbd}>/</kbd> Search</span>
+        <span><kbd style={S.kbd}>N</kbd> New invoice</span>
+        <span><kbd style={S.kbd}>Esc</kbd> Close modal</span>
+        <span>Click <kbd style={S.kbd}>amount</kbd> or <kbd style={S.kbd}>due date</kbd> to edit inline</span>
+      </div>
     </div>
   );
 }
@@ -1407,18 +1814,18 @@ const styles = {
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 },
   logo: { width: 40, height: 40, borderRadius: 8, background: "linear-gradient(135deg, #3b82f6, #1d4ed8)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14, color: "#fff", letterSpacing: 1 },
   title: { fontSize: 20, fontWeight: 700, color: "#f1f5f9", letterSpacing: -0.5 },
-  subtitle: { fontSize: 12, color: "#64748b", marginTop: 2 },
-  btn: { padding: "8px 14px", borderRadius: 6, border: "1px solid #1e293b", background: "#0d1117", color: "#94a3b8", fontSize: 12, fontWeight: 500, cursor: "pointer", transition: "all .15s" },
+  subtitle: { fontSize: 12, color: "#94a3b8", marginTop: 2 },
+  btn: { padding: "8px 14px", minHeight: 36, borderRadius: 6, border: "1px solid #1e293b", background: "#0d1117", color: "#cbd5e1", fontSize: 12, fontWeight: 500, cursor: "pointer", transition: "all .15s" },
   btnActive: { background: "#1e293b", color: "#e2e8f0", borderColor: "#3b82f6" },
-  btnPrimary: { padding: "8px 16px", borderRadius: 6, border: "none", background: "linear-gradient(135deg, #3b82f6, #2563eb)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" },
-  btnSmall: { padding: "4px 6px", borderRadius: 4, border: "1px solid #1e293b", background: "transparent", color: "#94a3b8", fontSize: 12, cursor: "pointer" },
+  btnPrimary: { padding: "8px 16px", minHeight: 36, borderRadius: 6, border: "none", background: "linear-gradient(135deg, #3b82f6, #2563eb)", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" },
+  btnSmall: { padding: "8px 10px", minWidth: 32, minHeight: 32, borderRadius: 4, border: "1px solid #1e293b", background: "transparent", color: "#cbd5e1", fontSize: 13, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
   dropZone: { border: "2px dashed #1e293b", borderRadius: 8, padding: "24px", textAlign: "center", marginBottom: 16, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, transition: "all .2s", background: "#0a0f1a" },
   dropZoneActive: { borderColor: "#3b82f6", background: "#0c1a3d" },
   bucketRow: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 16 },
   bucketCard: { padding: "14px 16px", borderRadius: 8, border: "1px solid #1e293b", transition: "all .2s" },
-  tableWrap: { background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, overflow: "auto", marginBottom: 16 },
+  tableWrap: { background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, overflow: "auto", marginBottom: 16, position: "relative" },
   table: { width: "100%", borderCollapse: "collapse" },
-  th: { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "#64748b", borderBottom: "1px solid #1e293b", background: "#0a0f1a", whiteSpace: "nowrap" },
+  th: { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "#94a3b8", borderBottom: "1px solid #1e293b", background: "#0a0f1a", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 5 },
   tr: { borderBottom: "1px solid #111827" },
   td: { padding: "10px 12px", fontSize: 13, whiteSpace: "nowrap" },
   vendorGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12, marginBottom: 16 },
@@ -1427,6 +1834,7 @@ const styles = {
   modal: { background: "#161b22", border: "1px solid #1e293b", borderRadius: 12, padding: "24px", width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "auto", animation: "modalIn .2s" },
   formGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
   formLabel: { display: "flex", flexDirection: "column", gap: 4 },
-  input: { padding: "8px 12px", borderRadius: 6, border: "1px solid #1e293b", background: "#0d1117", color: "#e2e8f0", fontSize: 13, fontFamily: "inherit", outline: "none" },
+  input: { padding: "8px 12px", minHeight: 36, borderRadius: 6, border: "1px solid #1e293b", background: "#0d1117", color: "#e2e8f0", fontSize: 13, fontFamily: "inherit", outline: "none" },
   spinner: { width: 18, height: 18, border: "2px solid #1e293b", borderTopColor: "#3b82f6", borderRadius: "50%", animation: "spin .6s linear infinite" },
+  kbd: { display: "inline-block", padding: "1px 6px", borderRadius: 4, border: "1px solid #1e293b", background: "#0d1117", color: "#cbd5e1", fontSize: 10, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, lineHeight: 1.5 },
 };
