@@ -82,12 +82,14 @@ export default function APAgingDashboard() {
   const [paymentMode, setPaymentMode] = useState("full"); // "full" | "partial" | "credit"
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentDate, setPaymentDate] = useState(todayStr());
+  const [paymentMethod, setPaymentMethod] = useState("ACH");
   const [paymentHistory, setPaymentHistory] = useState([]);
   const [loadingPayments, setLoadingPayments] = useState(false);
   // Batch payment modal
   const [showBatchPayModal, setShowBatchPayModal] = useState(false);
   const [batchPayItems, setBatchPayItems] = useState([]); // [{invoice, mode, amount}]
   const [batchPayDate, setBatchPayDate] = useState(todayStr());
+  const [batchPayMethod, setBatchPayMethod] = useState("ACH");
   const [batchPaying, setBatchPaying] = useState(false);
 
   // ── New: search, toasts, inline edit, recent payments, confirm modal ──
@@ -96,6 +98,8 @@ export default function APAgingDashboard() {
   const [editingCell, setEditingCell] = useState(null); // {invoiceId, field, value}
   const [recentPayments, setRecentPayments] = useState([]);
   const [showRecentPayments, setShowRecentPayments] = useState(false);
+  const [allPayments, setAllPayments] = useState([]);
+  const [expandedRemittance, setExpandedRemittance] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null); // {message, onConfirm}
   const [quickFilter, setQuickFilter] = useState(null); // 'overdue' | 'thisWeek' | null
   const [printMode, setPrintMode] = useState(false);
@@ -151,6 +155,16 @@ export default function APAgingDashboard() {
     } catch (e) { /* silent */ }
   }, []);
   useEffect(() => { loadRecentPayments(); }, [loadRecentPayments, invoices.length]);
+
+  /* ── All payments (for remittance grouping) ── */
+  const loadAllPayments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/payments?all=1");
+      const data = await res.json();
+      if (Array.isArray(data)) setAllPayments(data);
+    } catch (e) { /* silent */ }
+  }, []);
+  useEffect(() => { loadAllPayments(); }, [loadAllPayments, invoices.length]);
 
   /* ── Auto-save invoice modal draft to localStorage ── */
   useEffect(() => {
@@ -399,6 +413,7 @@ export default function APAgingDashboard() {
     setPaymentInvoice(inv);
     setPaymentMode("full");
     setPaymentAmount(String(inv.amount - inv.amountPaid));
+    setPaymentMethod("ACH");
     // Smart default: if invoice has a due date in the future, use that; otherwise today
     const today = todayStr();
     const smartDate = inv.dueDate && inv.dueDate >= today ? inv.dueDate : today;
@@ -426,6 +441,7 @@ export default function APAgingDashboard() {
         invoiceId: paymentInvoice.id,
         amount: amt,
         paymentDate: paymentDate,
+        paymentMethod,
         note: paymentMode === "credit" ? "CREDIT APPLIED" : "",
       }),
     });
@@ -463,6 +479,7 @@ export default function APAgingDashboard() {
       amount: String(inv.amount - inv.amountPaid),
     })));
     setBatchPayDate(todayStr());
+    setBatchPayMethod("ACH");
     setShowBatchPayModal(true);
   };
 
@@ -492,7 +509,7 @@ export default function APAgingDashboard() {
         await fetch("/api/payments", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ invoiceId: item.invoice.id, amount: amt, paymentDate: batchPayDate }),
+          body: JSON.stringify({ invoiceId: item.invoice.id, amount: amt, paymentDate: batchPayDate, paymentMethod: batchPayMethod }),
         });
         count++;
         total += amt;
@@ -1012,34 +1029,90 @@ export default function APAgingDashboard() {
             </div>
           )}
 
-          {/* Paid/Void */}
-          {invoices.filter((i) => i.status === "paid" || i.status === "void").length > 0 && (
-            <details style={{ margin: "0 0 16px" }}>
-              <summary style={{ ...S.btn, cursor: "pointer", display: "inline-block", marginBottom: 8 }}>
-                Show paid/void invoices ({invoices.filter((i) => i.status === "paid" || i.status === "void").length})
-              </summary>
-              <div style={S.tableWrap}>
-                <table style={S.table}>
-                  <thead><tr><th style={S.th}>Vendor</th><th style={S.th}>Invoice #</th><th style={S.th}>Amount</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead>
-                  <tbody>
-                    {invoices.filter((i) => i.status === "paid" || i.status === "void").map((inv) => (
-                      <tr key={inv.id} style={{ ...S.tr, opacity: 0.6 }}>
-                        <td style={S.td}>{inv.vendorName}</td>
-                        <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{inv.invoiceNumber}</td>
-                        <td style={S.td}>{fmt(inv.amount)}</td>
-                        <td style={S.td}><span aria-label={`Status: ${inv.status}`} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: inv.status === "paid" ? "#052e16" : "#1e1b2e", color: inv.status === "paid" ? "#22c55e" : "#8b5cf6" }}><span aria-hidden="true">{STATUS_ICON[inv.status] || ""}</span>{inv.status}</span></td>
-                        <td style={S.td}>
-                          <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(inv)} title="Reopen invoice" aria-label={`Reopen invoice ${inv.invoiceNumber}`}>↩️</button>
-                          {inv.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(inv)} aria-label={`Download PDF for ${inv.invoiceNumber}`}>📥</button>}
-                          <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(inv)} aria-label={`Delete invoice ${inv.invoiceNumber}`}>🗑️</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-          )}
+          {/* Remittances (paid/void invoices grouped by vendor + date + method) */}
+          {(() => {
+            const closedIds = new Set(invoices.filter((i) => i.status === "paid" || i.status === "void").map((i) => i.id));
+            const invById = Object.fromEntries(invoices.map((i) => [i.id, i]));
+            // Group payments tied to closed invoices
+            const groups = {};
+            for (const p of allPayments) {
+              if (!closedIds.has(p.invoiceId)) continue;
+              const key = `${p.vendorName}||${p.paymentDate}||${p.paymentMethod}`;
+              if (!groups[key]) groups[key] = { vendorName: p.vendorName, paymentDate: p.paymentDate, paymentMethod: p.paymentMethod, total: 0, payments: [] };
+              groups[key].total += p.amount;
+              groups[key].payments.push(p);
+            }
+            // Voided invoices with no payments — surface as their own "Void" remittance per vendor+date
+            const voided = invoices.filter((i) => i.status === "void" && !allPayments.some((p) => p.invoiceId === i.id));
+            for (const inv of voided) {
+              const key = `${inv.vendorName}||${inv.updatedAt ? inv.updatedAt.slice(0, 10) : "—"}||Void`;
+              if (!groups[key]) groups[key] = { vendorName: inv.vendorName, paymentDate: inv.updatedAt ? inv.updatedAt.slice(0, 10) : "—", paymentMethod: "Void", total: 0, payments: [], voidedInvoices: [] };
+              groups[key].voidedInvoices = [...(groups[key].voidedInvoices || []), inv];
+            }
+            const remittances = Object.entries(groups)
+              .map(([key, g]) => ({ key, ...g }))
+              .sort((a, b) => (b.paymentDate || "").localeCompare(a.paymentDate || ""));
+            if (remittances.length === 0) return null;
+            const methodColor = (m) => ({ ACH: "#3b82f6", Check: "#22c55e", Wire: "#8b5cf6", "Credit Card": "#f59e0b", Zelle: "#06b6d4", Other: "#94a3b8", Void: "#8b5cf6" }[m] || "#94a3b8");
+            return (
+              <details style={{ margin: "0 0 16px" }}>
+                <summary style={{ ...S.btn, cursor: "pointer", display: "inline-block", marginBottom: 8 }}>
+                  Remittances ({remittances.length})
+                </summary>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {remittances.map((r) => {
+                    const expanded = expandedRemittance === r.key;
+                    const lineItems = r.payments.length > 0
+                      ? r.payments.map((p) => ({ payment: p, invoice: invById[p.invoiceId] })).filter((x) => x.invoice)
+                      : (r.voidedInvoices || []).map((inv) => ({ payment: null, invoice: inv }));
+                    const invCount = lineItems.length;
+                    return (
+                      <div key={r.key} style={{ background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden" }}>
+                        <button
+                          onClick={() => setExpandedRemittance(expanded ? null : r.key)}
+                          style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: "transparent", border: "none", color: "#e2e8f0", cursor: "pointer", textAlign: "left" }}
+                          aria-expanded={expanded}
+                        >
+                          <span style={{ fontSize: 12, color: "#64748b" }}>{expanded ? "▼" : "▶"}</span>
+                          <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 14, fontWeight: 700 }}>{r.vendorName}</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 4, background: `${methodColor(r.paymentMethod)}1a`, color: methodColor(r.paymentMethod), border: `1px solid ${methodColor(r.paymentMethod)}33` }}>{r.paymentMethod}</span>
+                            <span style={{ fontSize: 12, color: "#94a3b8" }}>{fmtDate(r.paymentDate)}</span>
+                            <span style={{ fontSize: 12, color: "#64748b" }}>· {invCount} invoice{invCount !== 1 ? "s" : ""}</span>
+                          </div>
+                          {r.paymentMethod !== "Void" && (
+                            <span style={{ fontSize: 16, fontWeight: 800, color: "#22c55e", fontVariantNumeric: "tabular-nums" }}>{fmt(r.total)}</span>
+                          )}
+                        </button>
+                        {expanded && (
+                          <div style={{ borderTop: "1px solid #1e293b", padding: "8px 12px 12px" }}>
+                            <table style={S.table}>
+                              <thead><tr><th style={S.th}>Invoice #</th><th style={S.th}>Invoice Total</th><th style={S.th}>{r.paymentMethod === "Void" ? "Status" : "Paid This Remittance"}</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead>
+                              <tbody>
+                                {lineItems.map(({ payment, invoice }) => (
+                                  <tr key={(payment?.id || "v") + "-" + invoice.id} style={S.tr}>
+                                    <td style={{ ...S.td, fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{invoice.invoiceNumber}</td>
+                                    <td style={{ ...S.td, fontVariantNumeric: "tabular-nums" }}>{fmt(invoice.amount)}</td>
+                                    <td style={{ ...S.td, fontVariantNumeric: "tabular-nums", color: payment ? "#22c55e" : "#64748b" }}>{payment ? fmt(payment.amount) : "—"}</td>
+                                    <td style={S.td}><span aria-label={`Status: ${invoice.status}`} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: invoice.status === "paid" ? "#052e16" : invoice.status === "void" ? "#1e1b2e" : "#2d1f05", color: invoice.status === "paid" ? "#22c55e" : invoice.status === "void" ? "#8b5cf6" : "#f59e0b" }}><span aria-hidden="true">{STATUS_ICON[invoice.status] || ""}</span>{invoice.status}</span></td>
+                                    <td style={S.td}>
+                                      <button style={{ ...S.btnSmall, color: "#f59e0b" }} onClick={() => reopenInvoice(invoice)} title="Reopen invoice" aria-label={`Reopen invoice ${invoice.invoiceNumber}`}>↩️</button>
+                                      {invoice.pdfPath && <button style={S.btnSmall} onClick={() => downloadPdf(invoice)} aria-label={`Download PDF for ${invoice.invoiceNumber}`}>📥</button>}
+                                      <button style={{ ...S.btnSmall, color: "#ef4444" }} onClick={() => deleteInvoice(invoice)} aria-label={`Delete invoice ${invoice.invoiceNumber}`}>🗑️</button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            );
+          })()}
         </>
       )}
 
@@ -1561,11 +1634,24 @@ export default function APAgingDashboard() {
               </div>
             </div>
 
-            {/* Payment date */}
-            <label style={{ ...S.formLabel, marginBottom: 16 }}>
-              <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Payment Date</span>
-              <input style={S.input} type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
-            </label>
+            {/* Payment date + method */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+              <label style={S.formLabel}>
+                <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Payment Date</span>
+                <input style={S.input} type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
+              </label>
+              <label style={S.formLabel}>
+                <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Method</span>
+                <select style={S.input} value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                  <option>ACH</option>
+                  <option>Check</option>
+                  <option>Wire</option>
+                  <option>Credit Card</option>
+                  <option>Zelle</option>
+                  <option>Other</option>
+                </select>
+              </label>
+            </div>
 
             {/* Full / Partial / Credit toggle */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
@@ -1644,11 +1730,24 @@ export default function APAgingDashboard() {
             <h3 style={{ fontSize: 18, fontWeight: 800, color: "#e2e8f0", marginBottom: 4 }}>Batch Payment</h3>
             <p style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>{batchPayItems.length} invoices selected</p>
 
-            {/* Payment date */}
-            <label style={{ ...S.formLabel, marginBottom: 16 }}>
-              <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Payment Date</span>
-              <input style={S.input} type="date" value={batchPayDate} onChange={(e) => setBatchPayDate(e.target.value)} />
-            </label>
+            {/* Payment date + method */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+              <label style={S.formLabel}>
+                <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Payment Date</span>
+                <input style={S.input} type="date" value={batchPayDate} onChange={(e) => setBatchPayDate(e.target.value)} />
+              </label>
+              <label style={S.formLabel}>
+                <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Method</span>
+                <select style={S.input} value={batchPayMethod} onChange={(e) => setBatchPayMethod(e.target.value)}>
+                  <option>ACH</option>
+                  <option>Check</option>
+                  <option>Wire</option>
+                  <option>Credit Card</option>
+                  <option>Zelle</option>
+                  <option>Other</option>
+                </select>
+              </label>
+            </div>
 
             {/* Invoice list */}
             <div style={{ flex: 1, overflowY: "auto", marginBottom: 16 }}>

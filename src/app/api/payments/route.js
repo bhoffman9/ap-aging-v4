@@ -9,6 +9,30 @@ export async function GET(req) {
     const { searchParams } = new URL(req.url);
     const invoiceId = searchParams.get("invoiceId");
     const recent = searchParams.get("recent");
+    const all = searchParams.get("all");
+
+    // All payments mode — for remittance grouping. Joins with invoices for context.
+    if (all) {
+      const { data, error } = await supabase
+        .from("payments")
+        .select("*, invoices(vendor_name, invoice_number, amount, amount_paid, status)")
+        .order("payment_date", { ascending: false });
+      if (error) throw error;
+      return NextResponse.json(data.map((p) => ({
+        id: p.id,
+        invoiceId: p.invoice_id,
+        amount: parseFloat(p.amount) || 0,
+        paymentDate: p.payment_date,
+        paymentMethod: p.payment_method || "ACH",
+        note: p.note || "",
+        createdAt: p.created_at,
+        vendorName: p.invoices?.vendor_name || "",
+        invoiceNumber: p.invoices?.invoice_number || "",
+        invoiceAmount: parseFloat(p.invoices?.amount) || 0,
+        invoiceAmountPaid: parseFloat(p.invoices?.amount_paid) || 0,
+        invoiceStatus: p.invoices?.status || "",
+      })));
+    }
 
     // Recent payments mode — joins with invoices for context
     if (recent) {
@@ -24,6 +48,7 @@ export async function GET(req) {
         invoiceId: p.invoice_id,
         amount: parseFloat(p.amount) || 0,
         paymentDate: p.payment_date,
+        paymentMethod: p.payment_method || "ACH",
         note: p.note || "",
         createdAt: p.created_at,
         vendorName: p.invoices?.vendor_name || "",
@@ -47,6 +72,7 @@ export async function GET(req) {
       invoiceId: p.invoice_id,
       amount: parseFloat(p.amount) || 0,
       paymentDate: p.payment_date,
+      paymentMethod: p.payment_method || "ACH",
       note: p.note || "",
       createdAt: p.created_at,
     })));
@@ -59,7 +85,7 @@ export async function GET(req) {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { invoiceId, amount, paymentDate, note } = body;
+    const { invoiceId, amount, paymentDate, note, paymentMethod } = body;
     if (!invoiceId || !amount) {
       return NextResponse.json({ error: "invoiceId and amount required" }, { status: 400 });
     }
@@ -72,6 +98,7 @@ export async function POST(req) {
         amount: parseFloat(amount),
         payment_date: paymentDate || new Date().toISOString().slice(0, 10),
         note: note || "",
+        payment_method: paymentMethod || "ACH",
       });
     if (pErr) throw pErr;
 
