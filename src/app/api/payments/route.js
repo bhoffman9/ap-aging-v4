@@ -111,7 +111,8 @@ export async function POST(req) {
     if (iErr) throw iErr;
 
     const newPaid = parseFloat(inv.amount_paid) + parseFloat(amount);
-    const status = newPaid >= parseFloat(inv.amount) ? "paid" : "partial";
+    // ±$0.05 tolerance to absorb float rounding so a "full" payment isn't stuck as partial
+    const status = newPaid >= parseFloat(inv.amount) - 0.05 ? "paid" : "partial";
 
     const { error: uErr } = await supabase
       .from("invoices")
@@ -156,11 +157,11 @@ export async function DELETE(req) {
       .eq("id", paymentId);
     if (dErr) throw dErr;
 
-    // Recalculate invoice paid + status
+    // Recalculate invoice paid + status (±$0.05 tolerance for float rounding)
     const newPaid = Math.max(0, parseFloat(inv.amount_paid) - parseFloat(pmt.amount));
     let status;
-    if (newPaid <= 0) status = "open";
-    else if (newPaid >= parseFloat(inv.amount)) status = "paid";
+    if (newPaid <= 0.05) status = "open";
+    else if (newPaid >= parseFloat(inv.amount) - 0.05) status = "paid";
     else status = "partial";
 
     const { error: uErr } = await supabase

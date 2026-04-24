@@ -90,6 +90,8 @@ export default function APAgingDashboard() {
   const [batchPayItems, setBatchPayItems] = useState([]); // [{invoice, mode, amount}]
   const [batchPayDate, setBatchPayDate] = useState(todayStr());
   const [batchPayMethod, setBatchPayMethod] = useState("ACH");
+  const [batchPayMode, setBatchPayMode] = useState("perInvoice"); // "perInvoice" | "distribute"
+  const [batchPayTotal, setBatchPayTotal] = useState("");
   const [batchPaying, setBatchPaying] = useState(false);
 
   // ── New: search, toasts, inline edit, recent payments, confirm modal ──
@@ -480,6 +482,8 @@ export default function APAgingDashboard() {
     })));
     setBatchPayDate(todayStr());
     setBatchPayMethod("ACH");
+    setBatchPayMode("perInvoice");
+    setBatchPayTotal("");
     setShowBatchPayModal(true);
   };
 
@@ -495,6 +499,36 @@ export default function APAgingDashboard() {
         next[index].amount = "";
       }
       return next;
+    });
+  };
+
+  /* ── Distribute a total across selected invoices, oldest-due first ── */
+  const distributeAcrossBatch = (totalStr) => {
+    const total = parseFloat(totalStr) || 0;
+    setBatchPayTotal(totalStr);
+    setBatchPayItems((prev) => {
+      // Sort by dueDate asc (oldest first), null due dates last; tiebreak invoiceDate
+      const order = [...prev].sort((a, b) => {
+        const ad = a.invoice.dueDate || "9999-12-31";
+        const bd = b.invoice.dueDate || "9999-12-31";
+        if (ad !== bd) return ad < bd ? -1 : 1;
+        return (a.invoice.invoiceDate || "").localeCompare(b.invoice.invoiceDate || "");
+      });
+      let remaining = total;
+      const allocByInvoiceId = {};
+      for (const item of order) {
+        if (remaining <= 0) { allocByInvoiceId[item.invoice.id] = 0; continue; }
+        const balance = item.invoice.amount - item.invoice.amountPaid;
+        const take = Math.min(balance, remaining);
+        allocByInvoiceId[item.invoice.id] = Math.round(take * 100) / 100;
+        remaining = Math.round((remaining - take) * 100) / 100;
+      }
+      return prev.map((item) => {
+        const amt = allocByInvoiceId[item.invoice.id] || 0;
+        const balance = item.invoice.amount - item.invoice.amountPaid;
+        const mode = amt >= balance - 0.005 ? "full" : "partial";
+        return { ...item, mode, amount: amt > 0 ? String(amt) : "" };
+      });
     });
   };
 
@@ -1731,7 +1765,7 @@ export default function APAgingDashboard() {
             <p style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>{batchPayItems.length} invoices selected</p>
 
             {/* Payment date + method */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
               <label style={S.formLabel}>
                 <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Payment Date</span>
                 <input style={S.input} type="date" value={batchPayDate} onChange={(e) => setBatchPayDate(e.target.value)} />
@@ -1748,6 +1782,48 @@ export default function APAgingDashboard() {
                 </select>
               </label>
             </div>
+
+            {/* Mode toggle: per-invoice vs distribute total */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+              <button
+                style={{ ...S.btn, fontSize: 12, padding: "8px 12px", ...(batchPayMode === "perInvoice" ? { borderColor: "#3b82f6", color: "#3b82f6", background: "#0c1a3d" } : {}) }}
+                onClick={() => setBatchPayMode("perInvoice")}
+              >Per-Invoice</button>
+              <button
+                style={{ ...S.btn, fontSize: 12, padding: "8px 12px", ...(batchPayMode === "distribute" ? { borderColor: "#3b82f6", color: "#3b82f6", background: "#0c1a3d" } : {}) }}
+                onClick={() => { setBatchPayMode("distribute"); if (batchPayTotal) distributeAcrossBatch(batchPayTotal); }}
+              >Distribute Total</button>
+            </div>
+
+            {/* Distribute Total input */}
+            {batchPayMode === "distribute" && (() => {
+              const totalBalance = batchPayItems.reduce((s, item) => s + (item.invoice.amount - item.invoice.amountPaid), 0);
+              const allocated = batchPayItems.reduce((s, item) => s + (parseFloat(item.amount) || 0), 0);
+              const entered = parseFloat(batchPayTotal) || 0;
+              const overflow = entered - totalBalance;
+              return (
+                <div style={{ background: "#0d1117", border: "1px solid #1e293b", borderRadius: 8, padding: 14, marginBottom: 12 }}>
+                  <label style={{ ...S.formLabel, marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, color: "#64748b", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Total Payment (fills oldest first)</span>
+                    <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                      <input
+                        style={{ ...S.input, flex: 1, fontSize: 18, fontWeight: 700, textAlign: "right", margin: 0 }}
+                        type="number" step="0.01" placeholder="0.00" autoFocus
+                        value={batchPayTotal} onChange={(e) => distributeAcrossBatch(e.target.value)}
+                      />
+                      <button style={{ ...S.btn, fontSize: 12, padding: "6px 10px" }} onClick={() => distributeAcrossBatch(String(totalBalance.toFixed(2)))}>Pay All</button>
+                    </div>
+                  </label>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b", marginTop: 4 }}>
+                    <span>Balance across {batchPayItems.length} invoice{batchPayItems.length !== 1 ? "s" : ""}: {fmt(totalBalance)}</span>
+                    <span style={{ color: overflow > 0.005 ? "#ef4444" : "#22c55e" }}>
+                      Allocated: {fmt(allocated)}
+                      {overflow > 0.005 && ` · ${fmt(overflow)} over`}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Invoice list */}
             <div style={{ flex: 1, overflowY: "auto", marginBottom: 16 }}>
