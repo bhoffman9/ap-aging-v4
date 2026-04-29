@@ -671,6 +671,37 @@ export default function APAgingDashboard() {
     for (const inv of vendorInvs) await downloadPdf(inv);
   };
 
+  /* ── Export AP Aging CSV ── */
+  const exportAgingCSV = () => {
+    const esc = (v) => {
+      const s = String(v ?? "");
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ["Vendor", "Open Invoices", ...BUCKETS.map((b) => b.label), "Total Outstanding"];
+    const body = vendorList
+      .map((v) => {
+        const vOpen = (vendors[v] || []).filter((i) => i.status !== "paid" && i.status !== "void");
+        if (vOpen.length === 0) return null;
+        const buckets = BUCKETS.map((b) =>
+          vOpen.filter((i) => agingBucket(i.dueDate) === b.key).reduce((s, i) => s + (i.amount - i.amountPaid), 0)
+        );
+        const total = vOpen.reduce((s, i) => s + (i.amount - i.amountPaid), 0);
+        return [v, vOpen.length, ...buckets.map((n) => n.toFixed(2)), total.toFixed(2)];
+      })
+      .filter(Boolean);
+    const totalRow = ["TOTAL", openInvoices.length, ...BUCKETS.map((b) => bucketTotal(invoices, b.key).toFixed(2)), totalOutstanding.toFixed(2)];
+    const csv = [header, ...body, totalRow].map((r) => r.map(esc).join(",")).join("\r\n");
+    const today = new Date().toISOString().slice(0, 10);
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ap-aging-${today}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addToast(`Exported ${body.length} vendors`, "success");
+  };
+
   /* ── Sorting ── */
   const toggleSort = (field) => {
     if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -858,6 +889,17 @@ export default function APAgingDashboard() {
       {/* ── Aging View ── */}
       {view === "aging" && (
         <>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+            <button
+              style={S.btn}
+              onClick={exportAgingCSV}
+              disabled={openInvoices.length === 0}
+              title="Download AP aging CSV"
+              aria-label="Export AP aging report as CSV"
+            >
+              📥 Export CSV
+            </button>
+          </div>
           <div style={S.bucketRow}>
             {BUCKETS.map((b) => {
               const total = bucketTotal(invoices, b.key);
